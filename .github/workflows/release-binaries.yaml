@@ -1,0 +1,75 @@
+name: Compile into binaries
+
+on:
+  release:
+    types: [created]
+
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release tag where to create the binaries (as SemVer vX.X.X)'
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  releases-matrix:
+    name: Release WASM Binary
+    runs-on: ubuntu-latest
+    steps:
+      - id: read_tag
+        name: Read release tag name (mostly vx.x.x)
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            export TAG="${{ github.ref_name }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            export TAG="${{ inputs.release }}"
+          fi
+
+          echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.read_tag.outputs.release_tag }}
+
+      - name: 'Set up make'
+        run: |
+          sudo apt-get update && \
+          sudo apt-get install --yes build-essential
+
+      - name: 'Read Go version from go.mod'
+        id: read_go_version
+        run: |
+          go_version_raw=$(grep "^go " go.mod | awk '{print $2}')
+          echo "go_version=${go_version_raw}" >> "$GITHUB_OUTPUT"
+
+      - name: Determine Go version to use
+        id: determine_go_version
+        run: |
+          MIN_VERSION='1.24.2'
+          INPUT_VERSION='${{ steps.read_go_version.outputs.go_version }}'
+          
+          EFFECTIVE_VERSION=$(printf "%s\n%s" "$INPUT_VERSION" "$MIN_VERSION" | sort -V | tail -n1)
+          
+          echo "version=${EFFECTIVE_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: 'Set up Go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '${{ steps.determine_go_version.outputs.version }}'
+
+      - name: Build .SO binaries
+        id: build_so
+        run: |
+          make build-all
+
+      - name: Upload .SO binaries to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/*.so
+          tag: ${{ steps.read_tag.outputs.release_tag }}
+          overwrite: true

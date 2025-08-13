@@ -1,0 +1,107 @@
+name: Build Docker image
+
+on:
+  release:
+    types: [created]
+
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release tag where to create the binaries (as SemVer vX.X.X)'
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+
+jobs:
+  build:
+    #runs-on: default
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'Read release tag name (mostly vx.x.x)'
+        id: read_tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            export TAG="${{ github.ref_name }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            export TAG="${{ inputs.release }}"
+          fi
+
+          echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Checkout'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.read_tag.outputs.release_tag }}
+
+      - name: 'Set up Cloud SDK'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          version: '>= 363.0.0'
+
+      - name: 'Set up make'
+        run: |
+          sudo apt-get update && \
+          sudo apt-get install --yes build-essential
+
+      - name: 'Read Go version from go.mod'
+        id: read_go_version
+        run: |
+          go_version_raw=$(grep "^go " go.mod | awk '{print $2}')
+          echo "go_version=${go_version_raw}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Determine Go version to use'
+        id: determine_go_version
+        run: |
+          MIN_VERSION='1.24.2'
+          INPUT_VERSION='${{ steps.read_go_version.outputs.go_version }}'
+          
+          EFFECTIVE_VERSION=$(printf "%s\n%s" "$INPUT_VERSION" "$MIN_VERSION" | sort -V | tail -n1)
+          
+          echo "version=${EFFECTIVE_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: 'Set up Go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '${{ steps.determine_go_version.outputs.version }}'
+
+      - name: 'Set up QEMU'
+        id: qemu
+        uses: docker/setup-qemu-action@v3
+        with:
+          image: tonistiigi/binfmt:latest
+          platforms: all
+
+      - name: 'Set up Docker Buildx'
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build .SO binaries
+        id: build_so
+        run: |
+          make build-all
+
+      # Build and push to GitHub CR
+      - name: 'Docker Login to GHCR'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Build and push Docker images'
+        id: build
+        env:
+          RELEASE_TAG: ${{ steps.read_tag.outputs.release_tag }}
+        run: |
+          export IMG="ghcr.io/$GITHUB_REPOSITORY:$RELEASE_TAG"
+          
+          if grep -q '^docker-buildx:' Makefile; then
+            make docker-buildx
+          else
+            make docker-build
+            make docker-push
+          fi

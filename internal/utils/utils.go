@@ -1,0 +1,290 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package utils
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	//
+	"github.com/andybalholm/brotli"
+)
+
+const (
+	StateInternalSeparator = "|~|"
+)
+
+// CreateLogString generate a log formated as desired.
+// Accept "json" or "console" as formats.
+// Attributes are passed as key-value pairs: "key1", value1, "key2", value2, ...
+func CreateLogString(format string, level slog.Level, msg string, attrs ...interface{}) string {
+	var output bytes.Buffer
+	var handler slog.Handler
+
+	//
+	switch format {
+	case "json":
+		handler = slog.NewJSONHandler(&output, nil)
+	default:
+		handler = slog.NewTextHandler(&output, nil)
+	}
+
+	//
+	logger := slog.New(handler)
+	logger.Log(context.Background(), level, msg, attrs...)
+
+	return output.String()
+}
+
+// GenerateState TODO
+func GenerateState(secret string, originalURL string) string {
+
+	// Create payload with timestamp and originalURL
+	timestamp := time.Now().Unix()
+	payload := fmt.Sprintf("%d%s%s", timestamp, StateInternalSeparator, originalURL)
+
+	// Create payload HMAC-SHA256 with client_secret
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	signature := hex.EncodeToString(mac.Sum(nil))
+
+	// Combine payload and signature
+	state := base64.URLEncoding.EncodeToString([]byte(payload + StateInternalSeparator + signature))
+	return state
+}
+
+// ValidateState TODO
+func ValidateState(secret string, state string) (string, bool) {
+
+	// Decode from base64
+	decoded, err := base64.URLEncoding.DecodeString(state)
+	if err != nil {
+		return "", false
+	}
+
+	//
+	stateParts := strings.Split(string(decoded), StateInternalSeparator)
+	if len(stateParts) != 3 { // timestamp, url and signature
+		return "", false
+	}
+
+	// Verify HMAC
+	timestamp, originalURL := stateParts[0], stateParts[1]
+	expectedSignature := stateParts[2]
+
+	payload := timestamp + StateInternalSeparator + originalURL
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	actualSignature := hex.EncodeToString(mac.Sum(nil))
+
+	if !hmac.Equal([]byte(expectedSignature), []byte(actualSignature)) {
+		return "", false
+	}
+
+	// Verify timestamp (less than 10 minutes)
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return "", false
+	}
+
+	if time.Now().Unix()-ts > 600 { // 10 minutes
+		return "", false
+	}
+
+	return originalURL, true
+}
+
+// GetRequestURL TODO
+func GetRequestURL(headerMap map[string][]string) url.URL {
+
+	scheme := "https"
+	headerXForwardedProto, headerFound := headerMap["x-forwarded-proto"]
+	if headerFound && len(headerXForwardedProto) != 0 {
+		scheme = headerXForwardedProto[0]
+	}
+
+	//
+	host := ""
+	headerHost, headerFound := headerMap["host"]
+	if headerFound && len(headerHost) != 0 {
+		host = headerHost[0]
+	}
+
+	headerHost, headerFound = headerMap[":authority"] // HTTP/2
+	if headerFound && len(headerHost) != 0 {
+		host = headerHost[0]
+	}
+
+	//
+	path := ""
+	headerPath, headerFound := headerMap[":path"]
+	if headerFound && len(headerPath) != 0 {
+		path = headerPath[0]
+	}
+
+	pathParts := strings.SplitN(path, "?", 2)
+
+	tmpUri := url.URL{
+		Scheme: scheme,
+		Host:   host,
+	}
+
+	if len(pathParts) == 2 {
+		tmpUri.Path = pathParts[0]
+		tmpUri.RawQuery = pathParts[1]
+	}
+
+	if len(pathParts) == 1 {
+		tmpUri.Path = pathParts[0]
+	}
+
+	return tmpUri
+}
+
+type CookieContent struct {
+	Name    string
+	Prefix  string
+	Payload string
+
+	Domain   string
+	Path     string
+	Secure   bool
+	HttpOnly bool
+	SameSite string
+
+	Duration string
+}
+
+// CreateCookieContent TODO
+func CreateCookieContent(params CookieContent) string {
+
+	cookie := http.Cookie{}
+
+	cookie.Name = params.Prefix + params.Name
+	cookie.Value = params.Payload
+	cookie.HttpOnly = params.HttpOnly
+	cookie.Secure = params.Secure
+	cookie.Path = params.Path
+	cookie.Domain = params.Domain
+
+	var sameSiteMap = map[string]http.SameSite{
+		"Strict": http.SameSiteStrictMode,
+		"Lax":    http.SameSiteLaxMode,
+		"None":   http.SameSiteNoneMode,
+	}
+
+	if sameSite, valid := sameSiteMap[params.SameSite]; valid {
+		cookie.SameSite = sameSite
+	}
+
+	if params.Duration == "" || strings.HasPrefix(params.Duration, "-") {
+		cookie.MaxAge = -1
+	} else {
+		duration, err := time.ParseDuration(params.Duration)
+		if err != nil {
+			duration = 5 * 24 * time.Hour // On errors, defaults to 5 days
+		}
+		cookie.MaxAge = int(duration.Seconds())
+	}
+
+	return cookie.String()
+}
+
+// ExtractCookieValue TODO
+func ExtractCookieValue(cookieHeader, name string) string {
+	cookies := strings.Split(cookieHeader, ";")
+	for _, cookie := range cookies {
+		cookie = strings.TrimSpace(cookie)
+		if strings.HasPrefix(cookie, name+"=") {
+			return strings.TrimPrefix(cookie, name+"=")
+		}
+	}
+	return ""
+}
+
+func CompressBrotli(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+
+	br := brotli.NewWriterLevel(&buf, brotli.BestCompression)
+	if _, err := br.Write(data); err != nil {
+		return nil, err
+	}
+	if err := br.Close(); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func CompressBrotliBase64(input string) (string, error) {
+
+	// Decode base64
+	data, err := base64.RawURLEncoding.DecodeString(input)
+	if err != nil {
+		return "", fmt.Errorf("error decoding base64: %w", err)
+	}
+
+	// Compress
+	compressed, err := CompressBrotli(data)
+	if err != nil {
+		return "", fmt.Errorf("error compressing with brotli: %w", err)
+	}
+
+	// Re-encode in base64
+	return base64.RawURLEncoding.EncodeToString(compressed), nil
+}
+
+func DecompressBrotli(compressed []byte) ([]byte, error) {
+	buf := bytes.NewReader(compressed)
+	br := brotli.NewReader(buf)
+
+	var result bytes.Buffer
+	if _, err := result.ReadFrom(br); err != nil {
+		return nil, err
+	}
+
+	return result.Bytes(), nil
+}
+
+func DecompressBrotliBase64(input string) (string, error) {
+	//
+	compressed, err := base64.RawURLEncoding.DecodeString(input)
+	if err != nil {
+		return "", fmt.Errorf("error decoding base64: %w", err)
+	}
+
+	//
+	data, err := DecompressBrotli(compressed)
+	if err != nil {
+		return "", fmt.Errorf("error decompressing with brotli: %w", err)
+	}
+
+	//
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
