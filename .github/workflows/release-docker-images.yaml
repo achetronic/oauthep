@@ -102,6 +102,6 @@ jobs:
           if grep -q '^docker-buildx:' Makefile; then
             make docker-buildx
           else
-            make docker-build
-            make docker-push
+            make docker-build-all
+            make docker-push-all
           fi
