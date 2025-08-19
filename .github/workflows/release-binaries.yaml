@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   releases-matrix:
-    name: Release WASM Binary
+    name: Release .SO Binaries
     runs-on: ubuntu-latest
     steps:
       - id: read_tag
@@ -35,10 +35,10 @@ jobs:
         with:
           ref: ${{ steps.read_tag.outputs.release_tag }}
 
-      - name: 'Set up make'
+      - name: 'Set up tools'
         run: |
           sudo apt-get update && \
-          sudo apt-get install --yes build-essential
+          sudo apt-get install --yes build-essential aarch64-linux-gnu-gcc
 
       - name: 'Read Go version from go.mod'
         id: read_go_version

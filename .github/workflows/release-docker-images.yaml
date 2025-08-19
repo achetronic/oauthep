@@ -42,10 +42,10 @@ jobs:
         with:
           version: '>= 363.0.0'
 
-      - name: 'Set up make'
+      - name: 'Set up tools'
         run: |
           sudo apt-get update && \
-          sudo apt-get install --yes build-essential
+          sudo apt-get install --yes build-essential aarch64-linux-gnu-gcc
 
       - name: 'Read Go version from go.mod'
         id: read_go_version
