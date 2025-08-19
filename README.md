@@ -32,7 +32,7 @@ this is the plugin you're looking for.
 
 ## Features
 
-- **Complete OAuth2/OIDC flow**: Authorization code flow with PKCE support
+- **Complete OAuth2/OIDC flow**: Authorization code flow
 - **JWT token validation**: Automatic JWKS fetching and caching
 - **Session management**: Secure session cookies with configurable duration
 - **Flexible routing**: Skip authentication for specific paths (health checks, static assets)
@@ -48,7 +48,7 @@ You can find complete examples for both scenarios in the [documentation director
 
 > [!IMPORTANT]
 > Remember that Envoy version must match to the version this plugin is compiled for. Because of that, we compile
-> the plugin for several ones. Choose wisely.
+> the plugin for several ones. Choose wisely. [Official Envoy docs](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/golang_filter#developing-a-go-plugin)
 
 ## How to develop
 
