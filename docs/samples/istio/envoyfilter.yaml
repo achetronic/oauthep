@@ -72,7 +72,7 @@ spec:
             # The following is optional but highly recommended to load 'client_secret' credentials
             # in the extension. Format of the file is shown in sds-secret.yaml file
             # generic_secrets:
-            #   name: example_name
-            #   sds_config:
-            #     path_config_source:
-            #       path: "/path/to/sds-secret.yaml"
+            #   - name: example_name
+            #     sds_config:
+            #       path_config_source:
+            #         path: "/path/to/sds-secret.yaml"

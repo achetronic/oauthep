@@ -103,10 +103,10 @@ static_resources:
                           session_cookie_compression_enabled: true
 
                       generic_secrets:
-                        name: example_name
-                        sds_config:
-                          path_config_source:
-                            path: "/path/to/sds-secret.yaml"
+                        - name: example_name
+                          sds_config:
+                            path_config_source:
+                              path: "/path/to/sds-secret.yaml"
 
                   - name: envoy.filters.http.router
                     typed_config:

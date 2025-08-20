@@ -74,10 +74,10 @@ static_resources:
                           oauth_redirect_uri: "http://localhost:18000/oauth/callback"
 
                       #generic_secrets:
-                      #  name: example_name
-                      #  sds_config:
-                      #    path_config_source:
-                      #      path: "/path/to/sds-secret.yaml"
+                      #  - name: example_name
+                      #    sds_config:
+                      #      path_config_source:
+                      #        path: "/path/to/sds-secret.yaml"
 
                   - name: envoy.filters.http.router
                     typed_config:
