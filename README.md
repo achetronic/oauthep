@@ -1,9 +1,9 @@
 # Oauthep (Oauth2 Envoy Plugin)
 
-![GitHub Release](https://img.shields.io/github/v/release/achetronic/tnep)
-![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/achetronic/tnep)
-[![Go Report Card](https://goreportcard.com/badge/github.com/achetronic/tnep)](https://goreportcard.com/report/github.com/achetronic/tnep)
-![GitHub License](https://img.shields.io/github/license/achetronic/tnep)
+![GitHub Release](https://img.shields.io/github/v/release/achetronic/oauthep)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/achetronic/oauthep)
+[![Go Report Card](https://goreportcard.com/badge/github.com/achetronic/oauthep)](https://goreportcard.com/report/github.com/achetronic/oauthep)
+![GitHub License](https://img.shields.io/github/license/achetronic/oauthep)
 
 ![GitHub User's stars](https://img.shields.io/github/stars/achetronic?label=Achetronic%20Stars)
 ![GitHub followers](https://img.shields.io/github/followers/achetronic?label=Achetronic%20Followers)
