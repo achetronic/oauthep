@@ -41,7 +41,7 @@ static_resources:
                             cluster: web_service
                 http_filters:
                   ######################################################################################################
-                  # Ref: https://github.com/freepik-company/oauthep
+                  # Ref: https://github.com/achetronic/oauthep
                   ######################################################################################################
                   - name: envoy.filters.http.golang
                     typed_config:

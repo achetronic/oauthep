@@ -126,21 +126,21 @@ install-cross-compilers: ## Install cross-compilation tools (Ubuntu/Debian)
 
 .PHONY: generate-dev-config
 generate-dev-config: ## Generate development config with absolute path to plugin
-	@if [ ! -f "docs/samples/envoy-config-goext-dev.yaml" ]; then \
+	@if [ ! -f "docs/samples/envoy/envoy-config-goext-dev.yaml" ]; then \
 		absolute_path="$$(pwd)/dist/liboauthep-dev.so"; \
 		echo "Generating dev config for Envoy..."; \
 		echo "Plugin path: $$absolute_path"; \
-		cp docs/samples/envoy-config-goext-basic.yaml docs/samples/envoy-config-goext-dev.yaml; \
-		sed -i 's|library_path: ".*"|library_path: "'$$absolute_path'"|g' docs/samples/envoy-config-goext-dev.yaml; \
-		echo "✅ Generated docs/samples/envoy-config-goext-dev.yaml"; \
+		cp docs/samples/envoy/envoy-config-goext-basic.yaml docs/samples/envoy/envoy-config-goext-dev.yaml; \
+		sed -i 's|library_path: ".*"|library_path: "'$$absolute_path'"|g' docs/samples/envoy/envoy-config-goext-dev.yaml; \
+		echo "✅ Generated docs/samples/envoy/envoy-config-goext-dev.yaml"; \
 	else \
-		echo "✅ docs/samples/envoy-config-goext-dev.yaml already exists"; \
+		echo "✅ docs/samples/envoy/envoy-config-goext-dev.yaml already exists"; \
 	fi
 
 .PHONY: clean-dev-config
 clean-dev-config: ## Remove generated development config
-	@rm -f docs/samples/envoy-config-goext-dev.yaml
-	@echo "✅ Removed docs/samples/envoy-config-goext-dev.yaml"
+	@rm -f docs/samples/envoy/envoy-config-goext-dev.yaml
+	@echo "✅ Removed docs/samples/envoy/envoy-config-goext-dev.yaml"
 
 # For testing, Envoy is defaulted to version declared in go.mod
 # This variable can override selected Envoy version, and use another
@@ -154,7 +154,7 @@ run: download-envoy-bins build generate-dev-config ## Run envoy using your plugi
 		version_to_use=$$(grep 'github.com/envoyproxy/envoy' go.mod | awk '{print $$2}' | sed 's/^v//'); \
 	fi; \
 	echo "Using Envoy version: $$version_to_use"; \
-	$(LOCALBIN)/envoy-$$version_to_use -c ./docs/samples/envoy-config-goext-dev.yaml --concurrency 2 --log-format '%v'
+	$(LOCALBIN)/envoy-$$version_to_use -c ./docs/samples/envoy/envoy-config-goext-dev.yaml --concurrency 2 --log-format '%v'
 
 .PHONY: docker-build-amd64
 docker-build-amd64: build-all ## Build docker image with amd64 plugins only

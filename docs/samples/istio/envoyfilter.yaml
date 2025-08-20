@@ -1,0 +1,78 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: enable-oauth2-flow-filter
+  namespace: podinfo
+spec:
+
+  workloadSelector:
+    labels:
+      app.kubernetes.io/name: application-podinfo
+
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: SIDECAR_INBOUND
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              subFilter:
+                name: "envoy.filters.http.router"
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.golang
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.Config
+            plugin_name: oauthep
+            library_id: oauthep-v1
+
+            # Disclaimer: Istio Proxy image doesn't have extensions, so
+            # A Docker image with extensions must be created and host by you, using the Dockerfile located in this directory.
+            # If so, following path with exists in the image
+            library_path: "/extensions/liboauthep-linux-amd64-v1.34.2.so"
+
+            plugin_config:
+              "@type": type.googleapis.com/xds.type.v3.TypedStruct
+              value:
+                # Authentication paths
+                callback_path: "/oauth/callback"
+                skip_auth_regex:
+                  - "/health"
+                  - "/static/*"
+                logout_path: "/oauth/logout"
+                logout_redirect_after_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/logout"
+
+                # OAuth configuration
+                oauth_auth_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/auth"
+                oauth_token_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/token"
+                oauth_jwks_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/certs"
+                oauth_jwks_cache_ttl: "10m"
+                oauth_jwks_cache_file: "/tmp/jwks_cache.json"
+
+                oauth_client_id: "example"
+
+                # Oauth Client Secret can be read from: literal values, environment vars, SDS.
+                # This allows to use this extension in pure-Envoy deployments, and when Istio
+                # is present injecting the sidecar. To know more, read the samples in docs/samples/istio
+                oauth_client_secret: "xxxEXAMPLExxx"
+                #oauth_client_secret: "${env:EXAMPLE_VAR}"
+                #oauth_client_secret: "${sds:example_name}"
+
+                oauth_redirect_uri: "https://podinfo.example.com/oauth/callback"
+                oauth_scopes:
+                  - "openid"
+                  - "profile"
+                  - "email"
+                  - "groups"
+
+                session_cookie_compression_enabled: true
+
+            # The following is optional but highly recommended to load 'client_secret' credentials
+            # in the extension. Format of the file is shown in sds-secret.yaml file
+            # generic_secrets:
+            #   name: example_name
+            #   sds_config:
+            #     path_config_source:
+            #       path: "/path/to/sds-secret.yaml"
