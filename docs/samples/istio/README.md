@@ -68,3 +68,7 @@ annotations:
 ```
 
 ### 3. Configure and deploy your EnvoyFilter and enjoy
+
+An example of the object that is needed is shown [here](envoyfilter.yaml). 
+
+To know all the parameters you can configure, they are shown in the [Envoy example](../envoy/envoy-config-goext-complete.yaml)
