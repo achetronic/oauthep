@@ -17,18 +17,18 @@ This example shows you how to enable OAuth2 authentication in your applications 
 3. Push it to your registry (Docker Hub, GCR, ACR, etc.)
 
 
-## 2. Configure your workload
+### 2. Configure your workload
 
 Add these configurations to your Deployment/Pod:
 
-### Required labels:
+#### Required labels:
 
 ```yaml
 labels:
   sidecar.istio.io/inject: "true"
 ```
 
-### Required annotations:
+#### Required annotations:
 
 Following annotations are needed to:
 
@@ -67,4 +67,4 @@ annotations:
     ]
 ```
 
-## 3. Configure and deploy your EnvoyFilter and enjoy
+### 3. Configure and deploy your EnvoyFilter and enjoy
