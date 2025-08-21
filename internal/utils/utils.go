@@ -19,13 +19,11 @@ package utils
 
 import (
 	"bytes"
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -39,28 +37,6 @@ import (
 const (
 	StateInternalSeparator = "|~|"
 )
-
-// CreateLogString generate a log formated as desired.
-// Accept "json" or "console" as formats.
-// Attributes are passed as key-value pairs: "key1", value1, "key2", value2, ...
-func CreateLogString(format string, level slog.Level, msg string, attrs ...interface{}) string {
-	var output bytes.Buffer
-	var handler slog.Handler
-
-	//
-	switch format {
-	case "json":
-		handler = slog.NewJSONHandler(&output, nil)
-	default:
-		handler = slog.NewTextHandler(&output, nil)
-	}
-
-	//
-	logger := slog.New(handler)
-	logger.Log(context.Background(), level, msg, attrs...)
-
-	return output.String()
-}
 
 // GenerateState TODO
 func GenerateState(secret string, originalURL string) string {

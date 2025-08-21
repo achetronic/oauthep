@@ -55,6 +55,7 @@ static_resources:
                         value:
                           # Logging configuration
                           log_format: "json"
+                          log_level: "debug"
                           log_all_headers: true
                           exclude_log_headers:
                             - "cookie"

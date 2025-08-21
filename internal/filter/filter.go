@@ -19,6 +19,8 @@ package filter
 
 import (
 	"log"
+	"log/slog"
+	"os"
 	"regexp"
 
 	//
@@ -36,6 +38,7 @@ type HttpFilter struct {
 	config    cfg.Configuration
 
 	// Extra carried stuff
+	logger                           *slog.Logger
 	compiledExcludedPathsExpressions []*regexp.Regexp
 }
 
@@ -44,6 +47,15 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 	config, ok := c.(*cfg.Configuration)
 	if !ok {
 		log.Fatalf("Unexpected configuration provided")
+	}
+
+	// Configure the logger
+	var handler slog.Handler
+	switch config.LogFormat {
+	case "json":
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
+	default:
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
 	}
 
 	// Precompile path regular expressions
@@ -63,6 +75,7 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 
 		//
 		compiledExcludedPathsExpressions: compiledRegex,
+		logger:                           slog.New(handler),
 	}
 
 	// Some configuration params can be expanded by using Env or SDS.

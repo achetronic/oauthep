@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -141,7 +140,7 @@ func (f *HttpFilter) logHeaders(reqHeaderMap api.RequestHeaderMap) {
 		headerLogAttrs = append(headerLogAttrs, headerKey, headerValues)
 	}
 
-	f.callbacks.Log(api.Info, utils.CreateLogString(f.config.LogFormat, slog.LevelInfo, "request headers output", headerLogAttrs...))
+	f.logger.Info("request headers output", headerLogAttrs...)
 }
 
 // shouldSkipPath TODO
@@ -199,7 +198,7 @@ func (f *HttpFilter) handleOAuthProviderAuthCallback(currentUrl url.URL) {
 
 	defer func() {
 		if err != nil {
-			f.callbacks.Log(api.Error, utils.CreateLogString(f.config.LogFormat, slog.LevelError, "failed handling oauth provider auth callback", "error", err.Error()))
+			f.logger.Error("failed handling oauth provider auth callback", "error", err.Error())
 			f.callbacks.DecoderFilterCallbacks().SendLocalReply(http.StatusInternalServerError, "Authentication failed. Please try logging in again.",
 				map[string][]string{}, -1, "")
 		}
@@ -218,6 +217,22 @@ func (f *HttpFilter) handleOAuthProviderAuthCallback(currentUrl url.URL) {
 	if !stateValid {
 		err = fmt.Errorf(`failed validating state. Try again from the beginning`)
 		return
+	}
+
+	// Check required fields for exchange
+	tokenRequiredFields := map[string]string{
+		"client_id":     f.config.OauthClientId,
+		"client_secret": f.config.OauthClientSecret,
+		"code":          code,
+		"redirect_uri":  f.config.OauthRedirectUri,
+	}
+
+	f.logger.Debug("params set for code exchange", "params", tokenRequiredFields)
+	for reqFieldName, reqFieldValue := range tokenRequiredFields {
+		if strings.EqualFold(reqFieldValue, "") {
+			err = fmt.Errorf(`required field empty for code exchange: %s`, reqFieldName)
+			return
+		}
 	}
 
 	// Craft the request to exchange code for a token

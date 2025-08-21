@@ -36,6 +36,8 @@ spec:
             plugin_config:
               "@type": type.googleapis.com/xds.type.v3.TypedStruct
               value:
+                log_level: debug
+
                 # Authentication paths
                 callback_path: "/oauth/callback"
                 skip_auth_regex:

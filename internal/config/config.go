@@ -34,6 +34,9 @@ type Configuration struct {
 	// Possible values are: json, console
 	LogFormat string `json:"log_format,omitempty"`
 
+	// LogLevel ...
+	LogLevel string `json:"log_level,omitempty"`
+
 	// LogAllHeaders represents a flag to log all the headers or not
 	// Disabled by default
 	LogAllHeaders bool `json:"log_all_headers,omitempty"`
@@ -73,6 +76,7 @@ type Configuration struct {
 func NewConfigWithDefaults() *Configuration {
 	return &Configuration{
 		LogFormat:         "json",
+		LogLevel:          "info",
 		LogAllHeaders:     true,
 		ExcludeLogHeaders: []string{},
 
