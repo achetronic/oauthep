@@ -59,11 +59,14 @@ func (f *HttpFilter) expandConfigurationStringField(value string) string {
 		submatch := CompiledConfigExpansionEnvExpression.FindStringSubmatch(match)
 		key := submatch[1]
 
+		f.logger.Debug("looking for secret in environment variables", "variable", key)
 		secret := os.Getenv(key)
 		if secret != "" {
+			f.logger.Debug("secret found in environment variables", "variable", key, "value", secret)
 			return secret
 		}
 
+		f.logger.Debug("secret not found in environment variables", "variable", key)
 		return match
 	})
 
@@ -72,11 +75,14 @@ func (f *HttpFilter) expandConfigurationStringField(value string) string {
 		submatch := CompiledConfigExpansionSdsExpression.FindStringSubmatch(match)
 		key := submatch[1]
 
+		f.logger.Debug("looking for generic secret in SDS secret manager", "secret_name", key)
 		secret, secretFound := f.callbacks.SecretManager().GetGenericSecret(key)
 		if secretFound {
+			f.logger.Debug("generic secret found in SDS secret manager", "secret_name", key, "value", secret)
 			return secret
 		}
 
+		f.logger.Debug("generic secret not found in SDS secret manager", "secret_name", key)
 		return match
 	})
 

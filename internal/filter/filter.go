@@ -22,7 +22,6 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
-
 	//
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	cfg "oauthep/internal/config"
