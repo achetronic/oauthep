@@ -29,6 +29,15 @@ import (
 	"oauthep/internal/utils"
 )
 
+var (
+	LogLevelMap = map[string]slog.Level{
+		"debug":   slog.LevelDebug,
+		"info":    slog.LevelInfo,
+		"warning": slog.LevelWarn,
+		"error":   slog.LevelError,
+	}
+)
+
 type HttpFilter struct {
 	// Implement Decoder and Encoder filters at once
 	api.StreamFilter
@@ -53,11 +62,18 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 
 	// Configure the logger
 	var handler slog.Handler
+	logLevel, logLevelFound := LogLevelMap[config.LogLevel]
+	if !logLevelFound {
+		logLevel = slog.LevelInfo
+	}
+
+	log.Print("LEVEL: ", logLevel)
+
 	switch config.LogFormat {
 	case "json":
-		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
 	default:
-		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
 	}
 	logger := slog.New(handler)
 
