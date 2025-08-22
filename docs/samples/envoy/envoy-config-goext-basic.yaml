@@ -3,17 +3,6 @@ node:
   cluster: local
 
 static_resources:
-#  secrets:
-#    - name: token
-#      generic_secret:
-#        secret:
-#          inline_string: xxxEXAMPLExxx
-#
-#    - name: hmac
-#      generic_secret:
-#        secret:
-#          inline_string: xxxEXAMPLExxx
-
   listeners:
     - name: main
       address:

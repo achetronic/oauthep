@@ -44,11 +44,18 @@ type Configuration struct {
 	// ExcludeLogHeaders represent a list of headers that will be excluded when 'log_all_headers' is enabled
 	ExcludeLogHeaders []string `json:"exclude_log_headers,omitempty"`
 
+	//
+	TrustedProxiesMode string   `json:"trusted_proxies_mode,omitempty"`
+	TrustedProxies     []string `json:"trusted_proxies_cidr,omitempty"`
+
+	// Authentication exclusions
+	SkipAuthCidr  []string `json:"skip_auth_cidr,omitempty"`
+	SkipAuthRegex []string `json:"skip_auth_regex,omitempty"`
+
 	// TODO: Explain the stuff
-	CallbackPath           string   `json:"callback_path,omitempty"`
-	SkipAuthRegex          []string `json:"skip_auth_regex,omitempty"`
-	LogoutPath             string   `json:"logout_path,omitempty"`
-	LogoutRedirectAfterUri string   `json:"logout_redirect_after_uri,omitempty"`
+	CallbackPath           string `json:"callback_path,omitempty"`
+	LogoutPath             string `json:"logout_path,omitempty"`
+	LogoutRedirectAfterUri string `json:"logout_redirect_after_uri,omitempty"`
 
 	//
 	OauthAuthUri       string   `json:"oauth_auth_uri"`
@@ -80,8 +87,16 @@ func NewConfigWithDefaults() *Configuration {
 		LogAllHeaders:     true,
 		ExcludeLogHeaders: []string{},
 
+		//
+		TrustedProxiesMode: "default",
+		TrustedProxies:     []string{},
+
+		//
+		SkipAuthCidr:  []string{},
+		SkipAuthRegex: []string{},
+
+		//
 		CallbackPath:           "/oauth/callback",
-		SkipAuthRegex:          []string{},
 		LogoutPath:             "/oauth/logout",
 		LogoutRedirectAfterUri: "/",
 

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -157,6 +158,44 @@ func (f *HttpFilter) shouldSkipPath(path string) bool {
 		}
 	}
 	return false
+}
+
+// shouldSkipAuthFromIp TODO
+func (f *HttpFilter) shouldSkipAuthFromIp(xffHeaderValue []string) (bool, error) {
+
+	// Assume Envoy is getting the real IP by default
+	clientRealIpRaw := f.callbacks.StreamInfo().DownstreamRemoteAddress()
+	clientRealIpHost, _, err := net.SplitHostPort(clientRealIpRaw)
+	if err != nil {
+		return false, fmt.Errorf("failed parsing downstream address: %s", err.Error())
+	}
+
+	clientRealIp := net.ParseIP(clientRealIpHost)
+	if clientRealIp == nil {
+		return false, fmt.Errorf("invalid downstream IP address: %s", clientRealIpHost)
+	}
+
+	// Calculate from XFF when requested by config
+	if f.config.TrustedProxiesMode == "xforwarded" {
+
+		if len(xffHeaderValue) == 0 || xffHeaderValue[0] == "" {
+			return false, fmt.Errorf("x-forwarded-for header is empty")
+		}
+
+		sourceIPs := utils.GetHopsFromChainedHops(xffHeaderValue[0])
+		if len(sourceIPs) == 0 {
+			return false, fmt.Errorf("no valid IPs in X-Forwarded-For header")
+		}
+
+		xffClientIp, xffClientIpFound := utils.GetRealClientIpFromXFF(f.trustedProxiesCidrs, sourceIPs)
+		if !xffClientIpFound {
+			return false, fmt.Errorf("failed calculating real client ip from XFF. Client ip could be accidetally trusted")
+		}
+
+		clientRealIp = xffClientIp
+	}
+
+	return utils.IsTrustedIp(f.skipAuthCidrs, clientRealIp), nil
 }
 
 func (f *HttpFilter) handleLogout() {

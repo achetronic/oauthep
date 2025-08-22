@@ -61,11 +61,25 @@ static_resources:
                             - "cookie"
                             - "authorization"
 
-                          # Authentication paths
-                          callback_path: "/oauth/callback"
+                          # How to calculate real IP of the client
+                          #trusted_proxies_mode: default
+                          trusted_proxies_mode: xforwarded
+                          trusted_proxies:
+                            - '172.16.0.0/12'
+                            - '10.254.0.0/16'
+                            - '203.0.113.0/24'
+
+                          # Authentication exclusions
+                          skip_auth_cidr:
+                            - '10.0.0.0/8'
+                            - '192.168.0.0/16'
+
                           skip_auth_regex:
                             - "/health"
                             - "/static/*"
+
+                          # Authentication paths
+                          callback_path: "/oauth/callback"
                           logout_path: "/oauth/logout"
                           logout_redirect_after_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/logout"
 

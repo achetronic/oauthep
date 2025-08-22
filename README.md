@@ -35,7 +35,7 @@ this is the plugin you're looking for.
 - **Complete OAuth2/OIDC flow**: Authorization code flow
 - **JWT token validation**: Automatic JWKS fetching and caching
 - **Session management**: Secure session cookies with configurable duration
-- **Flexible routing**: Skip authentication for specific paths (health checks, static assets)
+- **Flexible routing**: Skip authentication for specific paths or CIDRs (health checks, static assets)
 - **Multiple secret sources**: Literal values, environment variables, or SDS (Secret Discovery Service)
 - **Comprehensive logging**: JSON structured logs with configurable verbosity
 - **Multi-provider support**: Works with Keycloak, Auth0, Google, AWS Cognito, and any OIDC provider

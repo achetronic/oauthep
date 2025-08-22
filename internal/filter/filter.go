@@ -20,6 +20,7 @@ package filter
 import (
 	"log"
 	"log/slog"
+	"net"
 	"os"
 	"regexp"
 	//
@@ -39,6 +40,8 @@ type HttpFilter struct {
 	// Extra carried stuff
 	logger                           *slog.Logger
 	compiledExcludedPathsExpressions []*regexp.Regexp
+	trustedProxiesCidrs              []*net.IPNet
+	skipAuthCidrs                    []*net.IPNet
 }
 
 func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.StreamFilter {
@@ -55,6 +58,20 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
 	default:
 		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
+	}
+	logger := slog.New(handler)
+
+	// Parse all CIDRs from config
+	trustedProxiesCidrs, err := utils.GetParsedCidrs(config.TrustedProxies)
+	if err != nil {
+		logger.Error("failed parsing trusted_proxies CIDRs: %s", err.Error())
+		os.Exit(1)
+	}
+
+	skipAuthCidrs, err := utils.GetParsedCidrs(config.SkipAuthCidr)
+	if err != nil {
+		logger.Error("failed parsing skip_auth_cidr CIDRs: %s", err.Error())
+		os.Exit(1)
 	}
 
 	// Precompile path regular expressions
@@ -73,8 +90,10 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 		config:    *config,
 
 		//
+		logger:                           logger,
 		compiledExcludedPathsExpressions: compiledRegex,
-		logger:                           slog.New(handler),
+		trustedProxiesCidrs:              trustedProxiesCidrs,
+		skipAuthCidrs:                    skipAuthCidrs,
 	}
 
 	// Some configuration params can be expanded by using Env or SDS.
@@ -92,36 +111,53 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream bool) api.StatusType {
 
 	defer f.logHeaders(reqHeaderMap)
+	allHeaders := reqHeaderMap.GetAllHeaders()
 
-	// 1. Check excluded paths
-	requestURL := utils.GetRequestURL(reqHeaderMap.GetAllHeaders())
+	// 1. Check excluded CIDRs
+	headerXForwardedFor, _ := allHeaders["x-forwarded-for"]
+	shouldSkipIp, err := f.shouldSkipAuthFromIp(headerXForwardedFor)
+	if err != nil {
+		f.logger.Error("failed to determine client IP for auth bypass check",
+			"error", err.Error(),
+			"xff_header", headerXForwardedFor,
+			"trusted_proxies_mode", f.config.TrustedProxiesMode)
+	}
+
+	if shouldSkipIp {
+		f.logger.Debug("skipping authentication for trusted client IP",
+			"trusted_proxies_mode", f.config.TrustedProxiesMode)
+		return api.Continue
+	}
+
+	// 2. Check excluded paths
+	requestURL := utils.GetRequestURL(allHeaders)
 	if f.shouldSkipPath(requestURL.Path) {
 		return api.Continue
 	}
 
-	// 2. Handle logout
+	// 3. Handle logout
 	if requestURL.Path == f.config.LogoutPath {
 		f.handleLogout()
 		return api.Continue
 	}
 
-	// 3. Handle OAuth callback
+	// 4. Handle OAuth callback
 	if requestURL.Path == f.config.CallbackPath {
 		f.handleOAuthProviderAuthCallback(requestURL)
 		return api.Continue
 	}
 
-	// 4. Validate JWT
+	// 5. Validate JWT
 	isAuthenticated, err := f.isRequestAuthenticated(reqHeaderMap)
 	if err != nil {
-		log.Print("failed checking request authentication: ", err.Error())
+		f.logger.Error("failed checking request authentication", "error", err.Error())
 	}
 
 	if isAuthenticated {
 		return api.Continue
 	}
 
-	// 5. Redirect to OAuth if not authenticated
+	// 6. Redirect to OAuth if not authenticated
 	f.redirectToOAuthProvider(requestURL)
 	return api.Continue
 }
