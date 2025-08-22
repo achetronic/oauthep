@@ -67,8 +67,6 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 		logLevel = slog.LevelInfo
 	}
 
-	log.Print("LEVEL: ", logLevel)
-
 	switch config.LogFormat {
 	case "json":
 		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
