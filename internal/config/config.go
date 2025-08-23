@@ -28,6 +28,13 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
+var (
+	ProviderOpenid = "openid"
+	ProviderGoogle = "google"
+
+	Providers = []string{ProviderOpenid, ProviderGoogle}
+)
+
 // Configuration TODO
 type Configuration struct {
 	// LogFormat represents the format of the logs
@@ -56,6 +63,9 @@ type Configuration struct {
 	CallbackPath           string `json:"callback_path,omitempty"`
 	LogoutPath             string `json:"logout_path,omitempty"`
 	LogoutRedirectAfterUri string `json:"logout_redirect_after_uri,omitempty"`
+
+	//
+	Provider string `json:"provider,omitempty"`
 
 	//
 	OauthAuthUri       string   `json:"oauth_auth_uri"`
@@ -99,6 +109,9 @@ func NewConfigWithDefaults() *Configuration {
 		CallbackPath:           "/oauth/callback",
 		LogoutPath:             "/oauth/logout",
 		LogoutRedirectAfterUri: "/",
+
+		//
+		Provider: ProviderOpenid,
 
 		//
 		OauthJwksCacheTTL:  "10m",

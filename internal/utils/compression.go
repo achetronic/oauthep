@@ -1,9 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package utils
 
 import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	//
 	"github.com/andybalholm/brotli"
@@ -41,6 +59,25 @@ func CompressBrotliBase64(input string) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(compressed), nil
 }
 
+func CompressJWT(jwt string) (string, error) {
+	parts := strings.Split(jwt, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("invalid JWT format")
+	}
+
+	compressedHeader, err := CompressBrotliBase64(parts[0])
+	if err != nil {
+		return "", fmt.Errorf("failed compressing header: %w", err)
+	}
+
+	compressedPayload, err := CompressBrotliBase64(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("failed compressing payload: %w", err)
+	}
+
+	return fmt.Sprintf("%s.%s.%s", compressedHeader, compressedPayload, parts[2]), nil
+}
+
 func DecompressBrotli(compressed []byte) ([]byte, error) {
 	buf := bytes.NewReader(compressed)
 	br := brotli.NewReader(buf)
@@ -68,4 +105,23 @@ func DecompressBrotliBase64(input string) (string, error) {
 
 	//
 	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func DecompressJWT(compressedJWT string) (string, error) {
+	parts := strings.Split(compressedJWT, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("invalid compressed JWT format")
+	}
+
+	decompressedHeader, err := DecompressBrotliBase64(parts[0])
+	if err != nil {
+		return "", fmt.Errorf("failed decompressing header: %w", err)
+	}
+
+	decompressedPayload, err := DecompressBrotliBase64(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("failed decompressing payload: %w", err)
+	}
+
+	return fmt.Sprintf("%s.%s.%s", decompressedHeader, decompressedPayload, parts[2]), nil
 }

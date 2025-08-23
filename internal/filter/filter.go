@@ -45,9 +45,9 @@ type HttpFilter struct {
 	//
 	callbacks api.FilterCallbackHandler
 	config    cfg.Configuration
+	logger    *slog.Logger
 
 	// Extra carried stuff
-	logger                           *slog.Logger
 	compiledExcludedPathsExpressions []*regexp.Regexp
 	trustedProxiesCidrs              []*net.IPNet
 	skipAuthCidrs                    []*net.IPNet
@@ -145,7 +145,7 @@ func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream 
 
 	// 2. Check excluded paths
 	requestURL := utils.GetRequestURL(allHeaders)
-	if f.shouldSkipPath(requestURL.Path) {
+	if f.shouldSkipFromPath(requestURL.Path) {
 		return api.Continue
 	}
 
@@ -161,13 +161,13 @@ func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream 
 		return api.Continue
 	}
 
-	// 5. Validate JWT
-	isAuthenticated, err := f.isRequestAuthenticated(reqHeaderMap)
+	// 5. Validate the token
+	err = f.checkRequestAuthentication(reqHeaderMap)
 	if err != nil {
 		f.logger.Error("failed checking request authentication", "error", err.Error())
 	}
 
-	if isAuthenticated {
+	if err == nil {
 		return api.Continue
 	}
 
@@ -189,6 +189,37 @@ func (f *HttpFilter) DecodeTrailers(trailers api.RequestTrailerMap) api.StatusTy
 ////////////////////////////
 
 func (f *HttpFilter) EncodeHeaders(header api.ResponseHeaderMap, endStream bool) api.StatusType {
+
+	storedValues := f.callbacks.StreamInfo().DynamicMetadata().Get("oauthep")
+
+	newTokensValueRaw, newTokensFound := storedValues["new_tokens"]
+	if !newTokensFound {
+		f.logger.Debug("no new tokens found in metadata, skipping cookie setting")
+		return api.Continue
+	}
+
+	if newTokensValueRaw == nil {
+		f.logger.Debug("new_tokens value is nil in metadata")
+		return api.Continue
+	}
+
+	newTokensValue, assertOk := newTokensValueRaw.(*OauthTokenEndpointResponse)
+	if !assertOk {
+		f.logger.Error("failed to cast new_tokens from metadata to OauthTokenEndpointResponse")
+		return api.Continue
+	}
+
+	responseHeaders := map[string][]string{}
+	err := f.setAuthCookies(responseHeaders, newTokensValue)
+	if err != nil {
+		f.logger.Error("failed setting auth cookies", "error", err.Error())
+		return api.Continue
+	}
+
+	for _, headerValue := range responseHeaders[utils.CookieResponseHeaderName] {
+		header.Add(utils.CookieResponseHeaderName, headerValue)
+	}
+
 	return api.Continue
 }
 

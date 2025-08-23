@@ -83,6 +83,10 @@ static_resources:
                           logout_path: "/oauth/logout"
                           logout_redirect_after_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/logout"
 
+                          # Supported provider
+                          # provider: google
+                          provider: openid
+
                           # OAuth configuration
                           oauth_auth_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/auth"
                           oauth_token_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/token"
@@ -104,7 +108,6 @@ static_resources:
                             - "openid"
                             - "profile"
                             - "email"
-                            - "groups"
 
                           # Session cookie configuration
                           session_cookie_prefix: "oauthep_"

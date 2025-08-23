@@ -23,7 +23,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -137,65 +136,4 @@ func GetRequestURL(headerMap map[string][]string) url.URL {
 	}
 
 	return tmpUri
-}
-
-type CookieContent struct {
-	Name    string
-	Prefix  string
-	Payload string
-
-	Domain   string
-	Path     string
-	Secure   bool
-	HttpOnly bool
-	SameSite string
-
-	Duration string
-}
-
-// CreateCookieContent TODO
-func CreateCookieContent(params CookieContent) string {
-
-	cookie := http.Cookie{}
-
-	cookie.Name = params.Prefix + params.Name
-	cookie.Value = params.Payload
-	cookie.HttpOnly = params.HttpOnly
-	cookie.Secure = params.Secure
-	cookie.Path = params.Path
-	cookie.Domain = params.Domain
-
-	var sameSiteMap = map[string]http.SameSite{
-		"Strict": http.SameSiteStrictMode,
-		"Lax":    http.SameSiteLaxMode,
-		"None":   http.SameSiteNoneMode,
-	}
-
-	if sameSite, valid := sameSiteMap[params.SameSite]; valid {
-		cookie.SameSite = sameSite
-	}
-
-	if params.Duration == "" || strings.HasPrefix(params.Duration, "-") {
-		cookie.MaxAge = -1
-	} else {
-		duration, err := time.ParseDuration(params.Duration)
-		if err != nil {
-			duration = 5 * 24 * time.Hour // On errors, defaults to 5 days
-		}
-		cookie.MaxAge = int(duration.Seconds())
-	}
-
-	return cookie.String()
-}
-
-// ExtractCookieValue TODO
-func ExtractCookieValue(cookieHeader, name string) string {
-	cookies := strings.Split(cookieHeader, ";")
-	for _, cookie := range cookies {
-		cookie = strings.TrimSpace(cookie)
-		if strings.HasPrefix(cookie, name+"=") {
-			return strings.TrimPrefix(cookie, name+"=")
-		}
-	}
-	return ""
 }

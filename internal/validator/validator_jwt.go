@@ -53,22 +53,29 @@ type JWK struct {
 	Use string `json:"use"`
 }
 
-func IsTokenValid(jwks *JWKS, token string) (bool, error) {
+// IsParsableAsJWT return true when the string has a valid JWT structure
+func IsParsableAsJWT(tokenString string) bool {
+	_, _, err := jwt.NewParser().ParseUnverified(tokenString, jwt.MapClaims{})
+	return err == nil
+}
+
+func ValidateJsonWebToken(jwks *JWKS, token string) error {
+
 	// Get JWT header
 	header, err := parseJWTHeader(token)
 	if err != nil {
-		return false, fmt.Errorf("error parsing token: %v", err)
+		return fmt.Errorf("error parsing token: %v", err)
 	}
 
 	// Retrieve 'Kid' and 'Alg' from token's header
 	kid, ok := header["kid"].(string)
 	if !ok {
-		return false, fmt.Errorf("jwt header 'kid' field not found")
+		return fmt.Errorf("jwt header 'kid' field not found")
 	}
 
 	alg, ok := header["alg"].(string)
 	if !ok {
-		return false, fmt.Errorf("jwt header 'alg' field not found")
+		return fmt.Errorf("jwt header 'alg' field not found")
 	}
 
 	// Look for the published key with the same Kid as the token
@@ -81,18 +88,18 @@ func IsTokenValid(jwks *JWKS, token string) (bool, error) {
 	}
 
 	if matchingKey == nil {
-		return false, fmt.Errorf("no matching 'kid' in JWKS")
+		return fmt.Errorf("no matching 'kid' in JWKS")
 	}
 
 	// Algorithm must match
 	if matchingKey.Alg != "" && matchingKey.Alg != alg {
-		return false, fmt.Errorf("algorithm missmatch")
+		return fmt.Errorf("algorithm mismatch")
 	}
 
 	// Convert JWK to a public key of corresponding type (RSA, EC, etc.)
 	publicKey, err := jwkToKey(matchingKey)
 	if err != nil {
-		return false, fmt.Errorf("error converting JWK to public key")
+		return fmt.Errorf("error converting JWK to public key")
 	}
 
 	// Validate the token
@@ -109,12 +116,12 @@ func IsTokenValid(jwks *JWKS, token string) (bool, error) {
 
 		return publicKey, nil
 	})
-
-	if err != nil || !parsedToken.Valid {
-		return false, fmt.Errorf("invalid token: %v", err)
+	if err != nil {
+		return err
 	}
+	_ = parsedToken // TODO: Shutup
 
-	return true, nil
+	return nil
 }
 
 // parseJWTHeader extracts the header of a JWT without verifying the signature

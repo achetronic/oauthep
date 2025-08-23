@@ -20,32 +20,23 @@ package filter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/golang-jwt/jwt/v5"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"oauthep/internal/config"
 	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
-	"time"
-
 	//
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"oauthep/internal/utils"
 	"oauthep/internal/validator"
-)
-
-const (
-	CookieNameAccessToken  = "access_token"
-	CookieNameIdToken      = "id_token"
-	CookieNameRefreshToken = "refresh_token"
-
-	//
 )
 
 var (
@@ -150,8 +141,8 @@ func (f *HttpFilter) logHeaders(reqHeaderMap api.RequestHeaderMap) {
 	f.logger.Info("request headers output", headerLogAttrs...)
 }
 
-// shouldSkipPath TODO
-func (f *HttpFilter) shouldSkipPath(path string) bool {
+// shouldSkipFromPath TODO
+func (f *HttpFilter) shouldSkipFromPath(path string) bool {
 	for _, expression := range f.compiledExcludedPathsExpressions {
 		if expression.MatchString(path) {
 			return true
@@ -198,45 +189,114 @@ func (f *HttpFilter) shouldSkipAuthFromIp(xffHeaderValue []string) (bool, error)
 	return utils.IsTrustedIp(f.skipAuthCidrs, clientRealIp), nil
 }
 
+// TODO
+func (f *HttpFilter) getAuthCookies(reqHeaderMap api.RequestHeaderMap) (tokenMap map[string]string, err error) {
+	// Extract cookies
+	cookieHeader, found := reqHeaderMap.Get(utils.CookieRequestHeaderName)
+	if !found {
+		return nil, fmt.Errorf("cookie header not found")
+	}
+
+	//
+	tokenValueMap := map[string]string{
+		utils.CookieNameAccessToken:  "",
+		utils.CookieNameIdToken:      "",
+		utils.CookieNameRefreshToken: "",
+	}
+
+	for tokenName, _ := range tokenValueMap {
+		// Extract tokens from cookies
+		tokenCookieName := f.config.SessionCookiePrefix + tokenName
+
+		tokenCookieValue := utils.ExtractCookieValue(cookieHeader, tokenCookieName)
+		if tokenCookieValue == "" {
+			continue
+		}
+
+		// Decompress?
+		if f.config.SessionCookieCompressionEnabled {
+			decompressedTokenCookieValue, err := utils.DecompressJWT(tokenCookieValue)
+			if err == nil {
+				tokenCookieValue = decompressedTokenCookieValue
+			}
+
+			// Errors decompressing are silently ignored
+		}
+		tokenValueMap[tokenName] = tokenCookieValue
+	}
+
+	return tokenValueMap, nil
+}
+
+// TODO
+func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens *OauthTokenEndpointResponse) error {
+
+	cookieContent := utils.CookieContent{
+		Prefix:   f.config.SessionCookiePrefix,
+		Domain:   f.config.SessionCookieDomain,
+		Path:     f.config.SessionCookiePath,
+		Secure:   f.config.SessionCookieSecure,
+		HttpOnly: f.config.SessionCookieHttpOnly,
+		SameSite: f.config.SessionCookieSameSite,
+		Duration: f.config.SessionCookieDuration,
+	}
+
+	cookiesToCreate := map[string]string{
+		utils.CookieNameAccessToken:  tokens.AccessToken,
+		utils.CookieNameIdToken:      tokens.IdToken,
+		utils.CookieNameRefreshToken: tokens.RefreshToken,
+	}
+
+	for cookieName, cookiePayload := range cookiesToCreate {
+		if cookiePayload == "" {
+			continue
+		}
+
+		cookieContent.Name = cookieName
+		cookieContent.Payload = cookiePayload
+
+		//
+		if f.config.SessionCookieCompressionEnabled && validator.IsParsableAsJWT(cookiePayload) {
+			compressedPayload, err := utils.CompressJWT(cookiePayload)
+			if err != nil {
+				return fmt.Errorf("failed compressing cookie %s: %w", cookieName, err)
+			}
+			cookieContent.Payload = compressedPayload
+		}
+
+		rawCookieContent := utils.CreateCookieContent(cookieContent)
+		responseHeaders[utils.CookieResponseHeaderName] = append(responseHeaders[utils.CookieResponseHeaderName], rawCookieContent)
+	}
+
+	return nil
+}
+
+// TODO
 func (f *HttpFilter) handleLogout() {
 
-	//
 	responseHeaders := map[string][]string{
-		"Location": {
-			f.config.LogoutRedirectAfterUri,
-		},
-		"Cache-Control": {
-			"no-cache, no-store, must-revalidate",
-		},
+		"Location":      {f.config.LogoutRedirectAfterUri},
+		"Cache-Control": {"no-cache, no-store, must-revalidate"},
+		"Set-Cookie":    utils.GenerateCleanCookiesHeader(f.config.SessionCookiePrefix, f.config.SessionCookiePath),
 	}
 
-	// Set the cookies for the user
-	cookieContent := utils.CookieContent{
-		Prefix: f.config.SessionCookiePrefix,
-		Path:   f.config.SessionCookiePath,
-	}
-
-	//
-	responseHeaders["Set-Cookie"] = []string{}
-	cookiesToDelete := []string{CookieNameAccessToken, CookieNameIdToken, CookieNameRefreshToken}
-	for _, cookieName := range cookiesToDelete {
-		cookieContent.Name = cookieName
-		cookieValue := utils.CreateCookieContent(cookieContent)
-		responseHeaders["Set-Cookie"] = append(responseHeaders["Set-Cookie"], cookieValue)
-	}
-
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(302, "Redirecting to the original site",
-		responseHeaders, -1, "")
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		302,
+		"Redirecting to the original site",
+		responseHeaders,
+		-1,
+		"")
 }
 
 type OauthTokenEndpointResponse struct {
 	AccessToken  string `json:"access_token,omitempty"`
-	TokenType    string `json:"token_type,omitempty"`
-	IdToken      string `json:"id_token,omitempty"`
-	RefreshToken string `json:"refresh_token,omitempty"`
 	ExpiresIn    int    `json:"expires_in,omitempty"`
+	IdToken      string `json:"id_token,omitempty"`
+	TokenType    string `json:"token_type,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
+// TODO
 func (f *HttpFilter) handleOAuthProviderAuthCallback(currentUrl url.URL) {
 
 	var err error
@@ -282,11 +342,11 @@ func (f *HttpFilter) handleOAuthProviderAuthCallback(currentUrl url.URL) {
 
 	// Craft the request to exchange code for a token
 	data := url.Values{}
-	data.Set("grant_type", "authorization_code")
+	data.Set("code", code)
 	data.Set("client_id", f.config.OauthClientId)
 	data.Set("client_secret", f.config.OauthClientSecret)
-	data.Set("code", code)
 	data.Set("redirect_uri", f.config.OauthRedirectUri)
+	data.Set("grant_type", "authorization_code")
 	encodedData := data.Encode()
 
 	//
@@ -328,125 +388,115 @@ func (f *HttpFilter) handleOAuthProviderAuthCallback(currentUrl url.URL) {
 
 	//
 	responseHeaders := map[string][]string{
-		"Location": {
-			originalUrlFromState,
-		},
-		"Cache-Control": {
-			"no-cache, no-store, must-revalidate",
-		},
+		"Location":      {originalUrlFromState},
+		"Cache-Control": {"no-cache, no-store, must-revalidate"},
 	}
 
-	// Set the cookies for the user
-	cookieContent := utils.CookieContent{
-		Prefix:   f.config.SessionCookiePrefix,
-		Domain:   f.config.SessionCookieDomain,
-		Path:     f.config.SessionCookiePath,
-		Secure:   f.config.SessionCookieSecure,
-		HttpOnly: f.config.SessionCookieHttpOnly,
-		SameSite: f.config.SessionCookieSameSite,
-		Duration: f.config.SessionCookieDuration,
-	}
-
-	//
-	cookiesToCreate := map[string]string{
-		CookieNameAccessToken:  responseObj.AccessToken,
-		CookieNameIdToken:      responseObj.IdToken,
-		CookieNameRefreshToken: responseObj.RefreshToken,
-	}
-
-	for cookieName, cookiePayload := range cookiesToCreate {
-		if cookiePayload == "" {
-			continue
-		}
-
-		cookieContent.Name = cookieName
-		cookieContent.Payload = cookiePayload
-
-		if f.config.SessionCookieCompressionEnabled &&
-			(cookieName == CookieNameAccessToken || cookieName == CookieNameIdToken || cookieName == CookieNameRefreshToken) {
-
-			accessTokenParts := strings.Split(cookieContent.Payload, ".")
-			if len(accessTokenParts) != 3 {
-				err = fmt.Errorf("access token doesn't match the pattern header.payload.signature")
-				return
-			}
-
-			var accessTokenHeader string
-			accessTokenHeader, err = utils.CompressBrotliBase64(accessTokenParts[0])
-			if err != nil {
-				err = fmt.Errorf("failed compressing cookie content: access token header: %s", err.Error())
-				return
-			}
-
-			var accessTokenPayload string
-			accessTokenPayload, err = utils.CompressBrotliBase64(accessTokenParts[1])
-			if err != nil {
-				err = fmt.Errorf("failed compressing cookie content: access token payload: %s", err.Error())
-				return
-			}
-			cookieContent.Payload = fmt.Sprintf("%s.%s.%s", accessTokenHeader, accessTokenPayload, accessTokenParts[2])
-		}
-
-		rawCookieContent := utils.CreateCookieContent(cookieContent)
-		responseHeaders["Set-Cookie"] = append(responseHeaders["Set-Cookie"], rawCookieContent)
+	// Set the cookies in the user browser
+	err = f.setAuthCookies(responseHeaders, responseObj)
+	if err != nil {
+		err = fmt.Errorf("failed setting cookies: %s", err.Error())
+		return
 	}
 
 	f.callbacks.DecoderFilterCallbacks().SendLocalReply(302, "Redirecting to the original site",
 		responseHeaders, -1, "")
 }
 
-// isRequestAuthenticated TODO
-func (f *HttpFilter) isRequestAuthenticated(reqHeaderMap api.RequestHeaderMap) (bool, error) {
-	// Get JWKS
+// refreshAccessToken perform a request to refresh the tokens and return them
+func (f *HttpFilter) refreshAccessToken(refreshToken string) (*OauthTokenEndpointResponse, error) {
+	data := url.Values{}
+	data.Set("grant_type", "refresh_token")
+	data.Set("refresh_token", refreshToken)
+	data.Set("client_id", f.config.OauthClientId)
+	data.Set("client_secret", f.config.OauthClientSecret)
+
+	bodyReader := bytes.NewReader([]byte(data.Encode()))
+	req, err := http.NewRequest(http.MethodPost, f.config.OauthTokenUri, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode > 299 {
+		return nil, fmt.Errorf("refresh failed: %d", res.StatusCode)
+	}
+
+	resBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	responseObj := &OauthTokenEndpointResponse{}
+	err = json.Unmarshal(resBody, responseObj)
+	return responseObj, err
+}
+
+// checkRequestAuthentication retrieve the tokens from the cookies and validate them.
+// When they are expired, try to refresh and store them in Envoy's metadata.
+func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMap) error {
+	// Get JWKS in lazy mode
 	jwksCerts, _, err := f.getJwks()
 	if err != nil {
-		return false, fmt.Errorf("failed getting JWKS: %s", err.Error())
+		return fmt.Errorf("failed getting JWKS: %s", err.Error())
 	}
 
 	// Extract cookies
-	cookieHeader, found := reqHeaderMap.Get("cookie")
-	if !found {
-		return false, nil
-	}
-
-	// Extract access token
-	accessTokenCookieName := f.config.SessionCookiePrefix + CookieNameAccessToken
-	accessTokenCookieValue := utils.ExtractCookieValue(cookieHeader, accessTokenCookieName)
-
-	if accessTokenCookieValue == "" {
-		return false, nil
-	}
-	accessToken := accessTokenCookieValue
-
-	if f.config.SessionCookieCompressionEnabled {
-		accessTokenParts := strings.Split(accessTokenCookieValue, ".")
-		if len(accessTokenParts) != 3 {
-			return false, fmt.Errorf("access token doesn't match the pattern header.payload.signature")
-		}
-
-		var accessTokenHeader string
-		accessTokenHeader, err = utils.DecompressBrotliBase64(accessTokenParts[0])
-		if err != nil {
-			return false, fmt.Errorf("failed decompressing cookie content: access token header: %s", err.Error())
-		}
-
-		var accessTokenPayload string
-		accessTokenPayload, err = utils.DecompressBrotliBase64(accessTokenParts[1])
-		if err != nil {
-			return false, fmt.Errorf("failed decompressing cookie content: access token payload: %s", err.Error())
-		}
-		accessToken = fmt.Sprintf("%s.%s.%s", accessTokenHeader, accessTokenPayload, accessTokenParts[2])
-	}
-
-	// Validate token
-	isValid, err := validator.IsTokenValid(jwksCerts, accessToken)
+	tokenValueMap, err := f.getAuthCookies(reqHeaderMap)
 	if err != nil {
-		return false, fmt.Errorf("failed validating token: %s", err.Error())
+		return fmt.Errorf("failed getting tokens from cookies: %s", err.Error())
 	}
 
-	return isValid, nil
+	// Time to validate the token, bruh.
+	// The process depends on the provider as not all of them are super standard
+	var validationError error
+	switch f.config.Provider {
+	case config.ProviderGoogle:
+		// Token types: https://cloud.google.com/docs/authentication/token-types
+		// https://cloud.google.com/iap/docs/authentication-howto
+		validationError = validator.ValidateJsonWebToken(jwksCerts, tokenValueMap[utils.CookieNameIdToken])
+	default:
+		validationError = validator.ValidateJsonWebToken(jwksCerts, tokenValueMap[utils.CookieNameAccessToken])
+	}
+
+	// JWT is valid, give the good news to the user
+	if validationError == nil {
+		return nil
+	}
+
+	// Token invalid and issue is NOT expiration
+	if !errors.As(validationError, &jwt.ErrTokenExpired) {
+		return fmt.Errorf("failed token validation: %s", validationError.Error())
+	}
+
+	f.logger.Info("expired token detected. refresh in process")
+
+	// No refresh_token found
+	if tokenValueMap[utils.CookieNameRefreshToken] == "" {
+		return fmt.Errorf("refresh token not found")
+	}
+
+	// Try to refresh tokens
+	newTokens, refreshError := f.refreshAccessToken(tokenValueMap[utils.CookieNameRefreshToken])
+	if refreshError != nil {
+		return fmt.Errorf("failed refreshing tokens: %s", refreshError.Error())
+	}
+
+	// New tokens achieved, store them and allow entrance
+	f.logger.Debug("tokens have been refreshed")
+	f.callbacks.StreamInfo().DynamicMetadata().Set("oauthep", "new_tokens", newTokens)
+	return nil
 }
 
+// redirectToOAuthProvider redirect the user to Oauth2 provider
 func (f *HttpFilter) redirectToOAuthProvider(currentUrl url.URL) {
 
 	// Craft 'state' (CSRF protection + original URL to come back)
@@ -455,8 +505,8 @@ func (f *HttpFilter) redirectToOAuthProvider(currentUrl url.URL) {
 	// Craft authorization URI
 	// TODO: Discover the endpoint from .well-known/openid-configuration
 	authURL := fmt.Sprintf("%s?"+
-		"client_id=%s&"+
 		"response_type=code&"+
+		"client_id=%s&"+
 		"scope=%s&"+
 		"redirect_uri=%s&"+
 		"state=%s",
@@ -468,125 +518,10 @@ func (f *HttpFilter) redirectToOAuthProvider(currentUrl url.URL) {
 
 	// Send redirect to the user
 	headers := map[string][]string{
-		"Location": {
-			authURL,
-		},
-		"Cache-Control": {
-			"no-cache, no-store, must-revalidate",
-		},
+		"Location":      {authURL},
+		"Cache-Control": {"no-cache, no-store, must-revalidate"},
 	}
 
 	f.callbacks.DecoderFilterCallbacks().SendLocalReply(302, "Redirecting to OAuth provider",
 		headers, -1, "")
-}
-
-type JwksCacheFile struct {
-	JWKS      *validator.JWKS `json:"jwks"`
-	Timestamp time.Time       `json:"timestamp"`
-}
-
-func (f *HttpFilter) getJwks() (*validator.JWKS, *time.Time, error) {
-
-	ttlDur, err := time.ParseDuration(f.config.OauthJwksCacheTTL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed parsing TTL for JWKS local cache")
-	}
-
-	// Try to read from file cache
-	jwks, timestamp, err := f.readJwksFromFile(f.config.OauthJwksCacheFile)
-	if err == nil && timestamp.After(time.Now().Add(-ttlDur)) {
-		return jwks, &timestamp, nil
-	}
-
-	// Fetch from remote
-	resp, err := http.Get(f.config.OauthJwksUri)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed getting JWKS from remote: %s", err.Error())
-	}
-	defer resp.Body.Close()
-
-	jwksCerts := validator.JWKS{}
-	err = json.NewDecoder(resp.Body).Decode(&jwksCerts)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed decoding JWKS from remote: %s", err.Error())
-	}
-
-	jwksCertsAt := time.Now()
-
-	// Save to file cache
-	err = f.writeJwksToFile(f.config.OauthJwksCacheFile, &jwksCerts, jwksCertsAt)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed writing in fs: %s", err.Error())
-	}
-
-	return &jwksCerts, &jwksCertsAt, nil
-}
-
-func (f *HttpFilter) readJwksFromFile(filename string) (*validator.JWKS, time.Time, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-	defer file.Close()
-
-	// Lock for reading
-	err = syscall.Flock(int(file.Fd()), syscall.LOCK_SH) // Shared lock
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-
-	var cache JwksCacheFile
-	err = json.Unmarshal(data, &cache)
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-
-	return cache.JWKS, cache.Timestamp, nil
-}
-
-// writeJwksToFile TODO
-func (f *HttpFilter) writeJwksToFile(filename string, jwks *validator.JWKS, timestamp time.Time) error {
-	// Create directory if it doesn't exist
-	dir := filepath.Dir(filename)
-	err := os.MkdirAll(dir, 0755)
-	if err != nil {
-		return fmt.Errorf("failed creating cache directory: %v", err)
-	}
-
-	// Open/create file for writing
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("failed opening cache file: %v", err)
-	}
-	defer file.Close()
-
-	// Exclusive lock for writing
-	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
-	if err != nil {
-		return fmt.Errorf("failed locking cache file: %v", err)
-	}
-	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-
-	cache := JwksCacheFile{
-		JWKS:      jwks,
-		Timestamp: timestamp,
-	}
-
-	data, err := json.Marshal(cache)
-	if err != nil {
-		return fmt.Errorf("failed marshaling cache: %v", err)
-	}
-
-	_, err = file.Write(data)
-	if err != nil {
-		return fmt.Errorf("failed writing cache file: %v", err)
-	}
-
-	return nil
 }
