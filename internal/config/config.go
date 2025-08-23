@@ -124,7 +124,7 @@ func NewConfigWithDefaults() *Configuration {
 		SessionCookiePath:     "/",
 		SessionCookieSecure:   true,
 		SessionCookieHttpOnly: true,
-		SessionCookieSameSite: "Lax,",
+		SessionCookieSameSite: "Lax",
 		SessionCookieDuration: "2d",
 
 		SessionCookieCompressionEnabled: true,

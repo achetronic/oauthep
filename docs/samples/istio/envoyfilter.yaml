@@ -37,6 +37,11 @@ spec:
               "@type": type.googleapis.com/xds.type.v3.TypedStruct
               value:
                 log_level: debug
+                log_all_headers: true
+                exclude_log_headers:
+                  - "request:authorization"
+                  - "request:cookie"
+                  - "response:set-cookie"
 
                 # Authentication exclusions
                 trusted_proxies_mode: default
@@ -58,8 +63,6 @@ spec:
                 oauth_auth_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/auth"
                 oauth_token_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/token"
                 oauth_jwks_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/certs"
-                oauth_jwks_cache_ttl: "10m"
-                oauth_jwks_cache_file: "/tmp/jwks_cache.json"
 
                 oauth_client_id: "example"
 

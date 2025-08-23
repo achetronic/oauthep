@@ -58,8 +58,9 @@ static_resources:
                           log_level: "debug"
                           log_all_headers: true
                           exclude_log_headers:
-                            - "cookie"
-                            - "authorization"
+                            - "request:authorization"
+                            - "request:cookie"
+                            - "response:set-cookie"
 
                           # How to calculate real IP of the client
                           #trusted_proxies_mode: default
@@ -83,8 +84,7 @@ static_resources:
                           logout_path: "/oauth/logout"
                           logout_redirect_after_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/logout"
 
-                          # Supported provider
-                          # provider: google
+                          # Supported providers: google, openid (default)
                           provider: openid
 
                           # OAuth configuration

@@ -122,26 +122,36 @@ func (f *HttpFilter) expandConfigurationPlaceholders() {
 	}
 }
 
-// logHeaders TODO
-func (f *HttpFilter) logHeaders(reqHeaderMap api.RequestHeaderMap) {
+// logHeaders log all the request/response headers excluding those set in configuration
+func (f *HttpFilter) logHeaders(reqHeaderMap api.RequestHeaderMap, resHeaderMap api.ResponseHeaderMap) {
 	if !f.config.LogAllHeaders {
 		return
 	}
 
-	allHeaders := reqHeaderMap.GetAllHeaders()
+	allReqHeaders := reqHeaderMap.GetAllHeaders()
 	var headerLogAttrs []interface{}
 
-	for headerKey, headerValues := range allHeaders {
-		if slices.Contains(f.config.ExcludeLogHeaders, strings.ToLower(headerKey)) {
+	for headerKey, headerValues := range allReqHeaders {
+
+		if slices.Contains(f.config.ExcludeLogHeaders, "request:"+strings.ToLower(headerKey)) {
 			continue
 		}
-		headerLogAttrs = append(headerLogAttrs, headerKey, headerValues)
+		headerLogAttrs = append(headerLogAttrs, "request:"+headerKey, headerValues)
 	}
 
-	f.logger.Info("request headers output", headerLogAttrs...)
+	allResHeaders := resHeaderMap.GetAllHeaders()
+	for headerKey, headerValues := range allResHeaders {
+
+		if slices.Contains(f.config.ExcludeLogHeaders, "response:"+strings.ToLower(headerKey)) {
+			continue
+		}
+		headerLogAttrs = append(headerLogAttrs, "response:"+headerKey, headerValues)
+	}
+
+	f.logger.Info("headers output", headerLogAttrs...)
 }
 
-// shouldSkipFromPath TODO
+// shouldSkipFromPath return true when a path is matching with excluded ones set in configuration
 func (f *HttpFilter) shouldSkipFromPath(path string) bool {
 	for _, expression := range f.compiledExcludedPathsExpressions {
 		if expression.MatchString(path) {
@@ -151,7 +161,7 @@ func (f *HttpFilter) shouldSkipFromPath(path string) bool {
 	return false
 }
 
-// shouldSkipAuthFromIp TODO
+// shouldSkipAuthFromIp return true when an IP from passed XFF header is matching with excluded CIDRs set in configuration
 func (f *HttpFilter) shouldSkipAuthFromIp(xffHeaderValue []string) (bool, error) {
 
 	// Assume Envoy is getting the real IP by default
@@ -189,7 +199,8 @@ func (f *HttpFilter) shouldSkipAuthFromIp(xffHeaderValue []string) (bool, error)
 	return utils.IsTrustedIp(f.skipAuthCidrs, clientRealIp), nil
 }
 
-// TODO
+// getAuthCookies return a map with common auth cookies retrieved from cookies
+// auth cookies: access_token, id_token, refresh_token
 func (f *HttpFilter) getAuthCookies(reqHeaderMap api.RequestHeaderMap) (tokenMap map[string]string, err error) {
 	// Extract cookies
 	cookieHeader, found := reqHeaderMap.Get(utils.CookieRequestHeaderName)
@@ -228,7 +239,8 @@ func (f *HttpFilter) getAuthCookies(reqHeaderMap api.RequestHeaderMap) (tokenMap
 	return tokenValueMap, nil
 }
 
-// TODO
+// setAuthCookies set auth cookies in passed response headers.
+// Values for auth cookies are passed as an OauthTokenEndpointResponse object
 func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens *OauthTokenEndpointResponse) error {
 
 	cookieContent := utils.CookieContent{
@@ -271,7 +283,7 @@ func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens 
 	return nil
 }
 
-// TODO
+// handleLogout handles auth cookies removal and redirection to the URL defined in configuration param 'logout_redirect_after_uri'
 func (f *HttpFilter) handleLogout() {
 
 	responseHeaders := map[string][]string{
@@ -296,7 +308,7 @@ type OauthTokenEndpointResponse struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
-// TODO
+// handleOAuthProviderAuthCallback handles callback->code<->token exchange flow between the plugin and OpenID provider.
 func (f *HttpFilter) handleOAuthProviderAuthCallback(currentUrl url.URL) {
 
 	var err error
@@ -403,8 +415,8 @@ func (f *HttpFilter) handleOAuthProviderAuthCallback(currentUrl url.URL) {
 		responseHeaders, -1, "")
 }
 
-// refreshAccessToken perform a request to refresh the tokens and return them
-func (f *HttpFilter) refreshAccessToken(refreshToken string) (*OauthTokenEndpointResponse, error) {
+// refreshAccessToken perform a request to refresh the tokens and return the response as bytes
+func (f *HttpFilter) refreshAccessToken(refreshToken string) ([]byte, error) {
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
@@ -430,14 +442,12 @@ func (f *HttpFilter) refreshAccessToken(refreshToken string) (*OauthTokenEndpoin
 		return nil, fmt.Errorf("refresh failed: %d", res.StatusCode)
 	}
 
-	resBody, err := io.ReadAll(res.Body)
+	responseBodyBytes, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	responseObj := &OauthTokenEndpointResponse{}
-	err = json.Unmarshal(resBody, responseObj)
-	return responseObj, err
+	return responseBodyBytes, err
 }
 
 // checkRequestAuthentication retrieve the tokens from the cookies and validate them.
@@ -485,18 +495,19 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 	}
 
 	// Try to refresh tokens
-	newTokens, refreshError := f.refreshAccessToken(tokenValueMap[utils.CookieNameRefreshToken])
+	newTokensBytes, refreshError := f.refreshAccessToken(tokenValueMap[utils.CookieNameRefreshToken])
 	if refreshError != nil {
 		return fmt.Errorf("failed refreshing tokens: %s", refreshError.Error())
 	}
 
 	// New tokens achieved, store them and allow entrance
 	f.logger.Debug("tokens have been refreshed")
-	f.callbacks.StreamInfo().DynamicMetadata().Set("oauthep", "new_tokens", newTokens)
+	f.callbacks.StreamInfo().DynamicMetadata().Set("oauthep", "new_tokens", string(newTokensBytes))
 	return nil
 }
 
-// redirectToOAuthProvider redirect the user to Oauth2 provider
+// redirectToOAuthProvider remove the cookies and redirect the user to OpenID provider.
+// Handles login->code->callback flow for non-authenticated users
 func (f *HttpFilter) redirectToOAuthProvider(currentUrl url.URL) {
 
 	// Craft 'state' (CSRF protection + original URL to come back)
@@ -520,6 +531,7 @@ func (f *HttpFilter) redirectToOAuthProvider(currentUrl url.URL) {
 	headers := map[string][]string{
 		"Location":      {authURL},
 		"Cache-Control": {"no-cache, no-store, must-revalidate"},
+		"Set-Cookie":    utils.GenerateCleanCookiesHeader(f.config.SessionCookiePrefix, f.config.SessionCookiePath),
 	}
 
 	f.callbacks.DecoderFilterCallbacks().SendLocalReply(302, "Redirecting to OAuth provider",

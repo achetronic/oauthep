@@ -43,8 +43,9 @@ static_resources:
                         "@type": type.googleapis.com/xds.type.v3.TypedStruct
                         value:
                           exclude_log_headers:
-                            - "cookie"
-                            - "authorization"
+                            - "request:authorization"
+                            - "request:cookie"
+                            - "response:set-cookie"
 
                           # OAuth configuration
                           oauth_auth_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/auth"

@@ -18,11 +18,14 @@
 package filter
 
 import (
+	"encoding/json"
+	"github.com/google/uuid"
 	"log"
 	"log/slog"
 	"net"
 	"os"
 	"regexp"
+
 	//
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	cfg "oauthep/internal/config"
@@ -73,7 +76,7 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 	default:
 		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
 	}
-	logger := slog.New(handler)
+	logger := slog.New(handler).With("plugin-call", uuid.New())
 
 	// Parse all CIDRs from config
 	trustedProxiesCidrs, err := utils.GetParsedCidrs(config.TrustedProxies)
@@ -123,8 +126,6 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 ////////////////////////////
 
 func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream bool) api.StatusType {
-
-	defer f.logHeaders(reqHeaderMap)
 	allHeaders := reqHeaderMap.GetAllHeaders()
 
 	// 1. Check excluded CIDRs
@@ -189,28 +190,34 @@ func (f *HttpFilter) DecodeTrailers(trailers api.RequestTrailerMap) api.StatusTy
 ////////////////////////////
 
 func (f *HttpFilter) EncodeHeaders(header api.ResponseHeaderMap, endStream bool) api.StatusType {
-
 	storedValues := f.callbacks.StreamInfo().DynamicMetadata().Get("oauthep")
 
 	newTokensValueRaw, newTokensFound := storedValues["new_tokens"]
 	if !newTokensFound {
-		f.logger.Debug("no new tokens found in metadata, skipping cookie setting")
+		f.logger.Debug("metadata: new_tokens not found, skipping cookie setting")
 		return api.Continue
 	}
 
 	if newTokensValueRaw == nil {
-		f.logger.Debug("new_tokens value is nil in metadata")
+		f.logger.Debug("metadata: new_tokens value is nil")
 		return api.Continue
 	}
 
-	newTokensValue, assertOk := newTokensValueRaw.(*OauthTokenEndpointResponse)
+	newTokensValue, assertOk := newTokensValueRaw.(string)
 	if !assertOk {
-		f.logger.Error("failed to cast new_tokens from metadata to OauthTokenEndpointResponse")
+		f.logger.Error("metadata: failed to cast 'new_tokens' to string")
+		return api.Continue
+	}
+
+	newTokensObj := &OauthTokenEndpointResponse{}
+	err := json.Unmarshal([]byte(newTokensValue), newTokensObj)
+	if err != nil {
+		f.logger.Error("failed to decode 'new_tokens' into OauthTokenEndpointResponse object")
 		return api.Continue
 	}
 
 	responseHeaders := map[string][]string{}
-	err := f.setAuthCookies(responseHeaders, newTokensValue)
+	err = f.setAuthCookies(responseHeaders, newTokensObj)
 	if err != nil {
 		f.logger.Error("failed setting auth cookies", "error", err.Error())
 		return api.Continue
@@ -237,7 +244,7 @@ func (f *HttpFilter) EncodeTrailers(trailers api.ResponseTrailerMap) api.StatusT
 
 func (f *HttpFilter) OnLog(reqHeaders api.RequestHeaderMap, reqTrailers api.RequestTrailerMap,
 	respHeaders api.ResponseHeaderMap, respTrailers api.ResponseTrailerMap) {
-	//log.Print("RESPUESTA: ", respHeaders.GetAllHeaders())
+	f.logHeaders(reqHeaders, respHeaders)
 }
 
 func (f *HttpFilter) OnDestroy(reason api.DestroyReason) {}

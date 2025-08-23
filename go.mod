@@ -7,6 +7,7 @@ require (
 	github.com/cncf/xds/go v0.0.0-20250501225837-2ac532fd4443
 	github.com/envoyproxy/envoy v1.35.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/uuid v1.6.0
 	google.golang.org/protobuf v1.36.7
 )
 
