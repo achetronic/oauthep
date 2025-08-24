@@ -70,6 +70,7 @@ type Configuration struct {
 	CallbackPath           string `json:"callback_path,omitempty"`
 	LogoutPath             string `json:"logout_path,omitempty"`
 	LogoutRedirectAfterUri string `json:"logout_redirect_after_uri,omitempty"`
+	ErrorPath              string `json:"error_path,omitempty"`
 
 	//
 	Provider string `json:"provider,omitempty"`
@@ -117,6 +118,7 @@ func NewConfigWithDefaults() *Configuration {
 		CallbackPath:           "/oauth/callback",
 		LogoutPath:             "/oauth/logout",
 		LogoutRedirectAfterUri: "/",
+		ErrorPath:              "/oauth/error",
 
 		//
 		Provider: ProviderOpenid,

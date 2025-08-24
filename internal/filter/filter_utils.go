@@ -19,6 +19,7 @@ package filter
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +33,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	//
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
@@ -39,10 +41,52 @@ import (
 	"oauthep/internal/utils"
 )
 
+const (
+	// TODO: Move this to another place.
+	// Error codes for AuthContext
+
+	ErrorCodeTokenInvalid = 1 // Token structurally invalid
+	ErrorCodeStateInvalid = 2 // State validation failed (CSRF)
+	ErrorCodeRedirectLoop = 3 // Too many redirects detected
+)
+
 var (
 	CompiledConfigExpansionEnvExpression = regexp.MustCompile(`\$\{env:([^}]+)\}`)
 	CompiledConfigExpansionSdsExpression = regexp.MustCompile(`\$\{sds:([^}]+)\}`)
+
+	// TODO: Move this to another place
+
+	ErrorCodeMessages = map[int]string{
+		ErrorCodeTokenInvalid: "Invalid authentication token",
+		ErrorCodeStateInvalid: "Invalid authentication state",
+		ErrorCodeRedirectLoop: "Too many authentication attempts",
+	}
 )
+
+// AuthContext structure for cookie storage
+type AuthContext struct {
+	Attempts     int   `json:"attempts"`
+	FirstAttempt int64 `json:"first_attempt"`
+	ErrorCode    int   `json:"error_code"`
+}
+
+// WithErrorCode sets error code and automatically increments attempts
+func (ctx *AuthContext) WithErrorCode(code int) *AuthContext {
+	ctx.ErrorCode = code
+	ctx.Attempts++
+	if ctx.FirstAttempt == 0 {
+		ctx.FirstAttempt = time.Now().Unix()
+	}
+	return ctx
+}
+
+// Reset clears the context
+func (ctx *AuthContext) Reset() *AuthContext {
+	ctx.Attempts = 0
+	ctx.FirstAttempt = 0
+	ctx.ErrorCode = 0
+	return ctx
+}
 
 func (f *HttpFilter) expandConfigurationStringField(value string) string {
 
@@ -199,9 +243,9 @@ func (f *HttpFilter) shouldSkipAuthFromIp(xffHeaderValue []string) (bool, error)
 	return utils.IsTrustedIp(f.skipAuthCidrs, clientRealIp), nil
 }
 
-// getAuthCookies return a map with common auth cookies retrieved from cookies
-// auth cookies: access_token, id_token, refresh_token
-func (f *HttpFilter) getAuthCookies(reqHeaderMap api.RequestHeaderMap) (map[string]string, error) {
+// getCookies return a map with plugin-related cookies.
+// This function only processes cookies pre-registered in utils.CookiesToHandle
+func (f *HttpFilter) getCookies(reqHeaderMap api.RequestHeaderMap) (map[string]string, error) {
 	// Extract cookies
 	cookieHeader, found := reqHeaderMap.Get(utils.CookieRequestHeaderName)
 	if !found {
@@ -235,9 +279,9 @@ func (f *HttpFilter) getAuthCookies(reqHeaderMap api.RequestHeaderMap) (map[stri
 	return cookieNameToContentMap, nil
 }
 
-// setAuthCookies set auth cookies in passed response headers.
-// Values for auth cookies are passed as an OauthTokenEndpointResponse object
-func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens *OauthTokenEndpointResponse) error {
+// setCookies set cookies with the content of cookieData map. It maps cookie's name -> content
+// This function only processes cookies pre-registered in utils.CookiesToHandle
+func (f *HttpFilter) setCookies(responseHeaders map[string][]string, cookieData map[string]string) error {
 
 	cookieContent := utils.CookieContent{
 		Prefix:   f.config.SessionCookiePrefix,
@@ -249,23 +293,18 @@ func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens 
 		Duration: f.config.SessionCookieDuration,
 	}
 
-	cookieNameToContentMap := map[string]string{
-		utils.CookieNameAccessToken:  tokens.AccessToken,
-		utils.CookieNameIdToken:      tokens.IdToken,
-		utils.CookieNameRefreshToken: tokens.RefreshToken,
-	}
-
+	// Iterar solo por cookies registradas (como hace getCookies)
 	for _, cookieName := range utils.CookiesToHandle {
 
-		cookiePayload := cookieNameToContentMap[cookieName]
+		cookiePayload := cookieData[cookieName]
 		if cookiePayload == "" {
-			continue
+			continue // Skip cookies vacías
 		}
 
 		cookieContent.Name = cookieName
 		cookieContent.Payload = cookiePayload
 
-		//
+		// Comprimir solo si es JWT
 		if f.config.SessionCookieCompressionEnabled && validator.IsParsableAsJWT(cookiePayload) {
 			compressedPayload, err := utils.CompressJWT(cookiePayload)
 			if err != nil {
@@ -279,6 +318,18 @@ func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens 
 	}
 
 	return nil
+}
+
+// FIXME: This function is here for backward compatibility
+// setAuthCookies set auth cookies in passed response headers.
+// Values for auth cookies are passed as an OauthTokenEndpointResponse object
+func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens *OauthTokenEndpointResponse) error {
+	cookieData := map[string]string{
+		utils.CookieNameAccessToken:  tokens.AccessToken,
+		utils.CookieNameIdToken:      tokens.IdToken,
+		utils.CookieNameRefreshToken: tokens.RefreshToken,
+	}
+	return f.setCookies(responseHeaders, cookieData)
 }
 
 // refreshAccessToken perform a request to refresh the tokens and return the response as bytes
@@ -331,7 +382,7 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 	}
 
 	// Extract cookies
-	cookieNameToContentMap, err := f.getAuthCookies(reqHeaderMap)
+	cookieNameToContentMap, err := f.getCookies(reqHeaderMap)
 	if err != nil {
 		return fmt.Errorf("failed getting tokens from cookies: %s", err.Error())
 	}
@@ -352,6 +403,7 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 	// Critical validation issue: Token structurally invalid
 	// These cannot be fixed with refresh
 	if parsedToken == nil {
+		f.authContext.WithErrorCode(ErrorCodeTokenInvalid)
 		if validationError != nil {
 			return fmt.Errorf("token structurally invalid: %s", validationError.Error())
 		}
@@ -414,4 +466,84 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 	f.callbacks.StreamInfo().DynamicMetadata().Set("oauthep", "new_tokens", string(newTokensBytes))
 
 	return nil
+}
+
+////////////////////////////////////////////////////
+// Experiments from here
+////////////////////////////////////////////////////
+
+// getAuthContextFromCookies retrieves and decrypts auth context from cookies
+func (f *HttpFilter) getAuthContextFromCookies(reqHeaderMap api.RequestHeaderMap) (*AuthContext, error) {
+	// Get all cookies
+	cookieMap, err := f.getCookies(reqHeaderMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed getting cookies: %w", err)
+	}
+
+	// Look for context cookie
+	encodedContext, exists := cookieMap[utils.CookieNameContext]
+	if !exists || encodedContext == "" {
+		// Return empty context if no cookie found
+		return &AuthContext{}, nil
+	}
+
+	// Decrypt and decode
+	decryptedBytes, err := utils.DecryptData(encodedContext, f.config.OauthClientSecret)
+	if err != nil {
+		f.logger.Warn("failed to decrypt auth context, returning empty", "error", err.Error())
+		return &AuthContext{}, nil
+	}
+
+	var context AuthContext
+	err = json.Unmarshal(decryptedBytes, &context)
+	if err != nil {
+		f.logger.Warn("failed to unmarshal auth context, returning empty", "error", err.Error())
+		return &AuthContext{}, nil
+	}
+
+	return &context, nil
+}
+
+// setAuthContextInCookies encrypts and stores auth context in response headers
+func (f *HttpFilter) setAuthContextInCookies(responseHeaders map[string][]string, context *AuthContext) error {
+	// Serialize context
+	jsonBytes, err := json.Marshal(context)
+	if err != nil {
+		return fmt.Errorf("failed to marshal context: %w", err)
+	}
+
+	// Encrypt
+	encodedContext, err := utils.EncryptData(jsonBytes, f.config.OauthClientSecret)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt context: %w", err)
+	}
+
+	// Set cookie using existing function
+	cookieData := map[string]string{
+		utils.CookieNameContext: encodedContext,
+	}
+
+	return f.setCookies(responseHeaders, cookieData)
+}
+
+const (
+	MaxAuthAttempts = 3
+	AttemptWindow   = 5 * 60 // 5 minutes in seconds
+)
+
+// shouldRedirectToError determines if we should show error page instead of redirecting to login
+func (f *HttpFilter) shouldRedirectToError() bool {
+	if f.authContext == nil {
+		return false
+	}
+
+	now := time.Now().Unix()
+
+	// When too many attempts happened in time window
+	if f.authContext.Attempts >= MaxAuthAttempts &&
+		now-f.authContext.FirstAttempt <= AttemptWindow {
+		return true
+	}
+
+	return false
 }

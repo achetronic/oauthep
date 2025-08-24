@@ -21,15 +21,60 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
-
 	//
 	"oauthep/internal/config"
 	"oauthep/internal/utils"
 )
+
+type ErrorInfo struct {
+	ErrorType    string   `json:"error_type"`
+	ErrorMessage string   `json:"error_message"`
+	Attempts     int      `json:"attempts"`
+	LastErrors   []string `json:"last_errors"`
+	Timestamp    int64    `json:"timestamp"`
+	Suggestions  []string `json:"suggestions"`
+}
+
+func (f *HttpFilter) handleErrorRedirect() {
+
+	responseHeaders := map[string][]string{
+		"Location":      {f.config.ErrorPath},
+		"Cache-Control": {"no-cache, no-store, must-revalidate"},
+	}
+
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		302,
+		"Redirecting to the original site",
+		responseHeaders,
+		-1,
+		"")
+}
+
+func (f *HttpFilter) handleError(reqHeaderMap api.RequestHeaderMap) {
+
+	f.logger.Debug("Handling error page request")
+
+	//
+	cookies, err := f.getCookies(reqHeaderMap)
+	if err != nil {
+		f.logger.Debug("No cookies found for error page", "error", err.Error())
+		cookies = map[string]string{}
+	}
+
+	// Extract context content
+	contextJSON := cookies["context"]
+	_ = contextJSON
+
+	// TODO
+	// Generate a nice error page
+	// Clean context and auth cookies
+	// Send error page too user
+}
 
 // handleLogout handles auth cookies removal and redirection to the URL defined in configuration param 'logout_redirect_after_uri'
 func (f *HttpFilter) handleLogout() {
@@ -72,6 +117,7 @@ func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) {
 	//
 	originalUrlFromState, stateValid := utils.ValidateState(f.config.OauthClientSecret, state)
 	if !stateValid {
+		f.authContext.WithErrorCode(ErrorCodeStateInvalid)
 		err = fmt.Errorf(`failed validating state. Try again from the beginning`)
 		return
 	}

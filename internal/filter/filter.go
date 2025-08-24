@@ -46,16 +46,19 @@ type HttpFilter struct {
 	// Implement Decoder and Encoder filters at once
 	api.StreamFilter
 
-	//
+	// General stuff (bad naming?)
 	callbacks api.FilterCallbackHandler
 	config    cfg.Configuration
 	logger    *slog.Logger
 
-	// Extra carried stuff
+	// General per-request stuff
 	trustedProxiesCidrs              []*net.IPNet
 	skipAuthCidrs                    []*net.IPNet
 	compiledExcludedPathsExpressions []*regexp.Regexp
 	celPrograms                      []*cel.Program
+
+	// Auth flow per-request stuff
+	authContext *AuthContext
 }
 
 func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.StreamFilter {
@@ -157,8 +160,8 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 // REQUEST PATH
 ////////////////////////////
 
-func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream bool) api.StatusType {
-	allHeaders := reqHeaderMap.GetAllHeaders()
+func (f *HttpFilter) DecodeHeaders(requestHeaders api.RequestHeaderMap, endStream bool) api.StatusType {
+	allHeaders := requestHeaders.GetAllHeaders()
 
 	// 1. Check excluded CIDRs
 	headerXForwardedFor, _ := allHeaders["x-forwarded-for"]
@@ -182,29 +185,53 @@ func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream 
 		return api.Continue
 	}
 
-	// 3. Handle logout
+	// 3. Recover auth context
+	f.authContext, err = f.getAuthContextFromCookies(requestHeaders)
+	if err != nil {
+		f.logger.Warn("failed to get auth context, creating new", "error", err.Error())
+		f.authContext = &AuthContext{}
+	}
+
+	// 4. Handle logout
 	if requestURL.Path == f.config.LogoutPath {
 		f.handleLogout()
 		return api.Continue
 	}
 
-	// 4. Handle OAuth callback
+	// 5. Handle OAuth callback
 	if requestURL.Path == f.config.CallbackPath {
 		f.handleOauthProviderAuthCallback(requestURL)
 		return api.Continue
 	}
 
-	// 5. Validate the token
-	err = f.checkRequestAuthentication(reqHeaderMap)
+	// 6. Handle error
+	if requestURL.Path == f.config.ErrorPath {
+		f.handleError(requestHeaders)
+		return api.Continue
+	}
+
+	// 7. Handle error redirection
+	if f.shouldRedirectToError() {
+		f.handleErrorRedirect()
+		return api.Continue
+	}
+
+	// 7. Validate the token
+	err = f.checkRequestAuthentication(requestHeaders)
 	if err != nil {
 		f.logger.Error("failed checking request authentication", "error", err.Error())
+
+		// Existing previous errors? may be looped
+		if f.authContext.Attempts > 0 {
+			f.authContext.WithErrorCode(ErrorCodeRedirectLoop)
+		}
 	}
 
 	if err == nil {
 		return api.Continue
 	}
 
-	// 6. Redirect to OAuth if not authenticated
+	// 8. Redirect to OAuth if not authenticated
 	f.handleOauthProviderRedirection(requestURL)
 	return api.Continue
 }
@@ -274,9 +301,9 @@ func (f *HttpFilter) EncodeTrailers(trailers api.ResponseTrailerMap) api.StatusT
 // NOT IMPLEMENTED
 ////////////////////////////
 
-func (f *HttpFilter) OnLog(reqHeaders api.RequestHeaderMap, reqTrailers api.RequestTrailerMap,
-	respHeaders api.ResponseHeaderMap, respTrailers api.ResponseTrailerMap) {
-	f.logHeaders(reqHeaders, respHeaders)
+func (f *HttpFilter) OnLog(requestHeaders api.RequestHeaderMap, requestTrailers api.RequestTrailerMap,
+	responseHeaders api.ResponseHeaderMap, responseTrailers api.ResponseTrailerMap) {
+	f.logHeaders(requestHeaders, responseHeaders)
 }
 
 func (f *HttpFilter) OnDestroy(reason api.DestroyReason) {}

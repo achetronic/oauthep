@@ -27,6 +27,7 @@ const (
 	CookieNameAccessToken  = "access_token"
 	CookieNameIdToken      = "id_token"
 	CookieNameRefreshToken = "refresh_token"
+	CookieNameContext      = "context"
 
 	//
 	CookieRequestHeaderName  = "Cookie"
@@ -34,7 +35,7 @@ const (
 )
 
 var (
-	CookiesToHandle = []string{CookieNameAccessToken, CookieNameIdToken, CookieNameRefreshToken}
+	CookiesToHandle = []string{CookieNameAccessToken, CookieNameIdToken, CookieNameRefreshToken, CookieNameContext}
 )
 
 type CookieContent struct {
