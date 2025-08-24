@@ -33,6 +33,10 @@ const (
 	CookieResponseHeaderName = "Set-Cookie"
 )
 
+var (
+	CookiesToHandle = []string{CookieNameAccessToken, CookieNameIdToken, CookieNameRefreshToken}
+)
+
 type CookieContent struct {
 	Name    string
 	Prefix  string

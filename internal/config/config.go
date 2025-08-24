@@ -28,10 +28,12 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
-var (
+const (
 	ProviderOpenid = "openid"
 	ProviderGoogle = "google"
+)
 
+var (
 	Providers = []string{ProviderOpenid, ProviderGoogle}
 )
 

@@ -158,7 +158,7 @@ func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream 
 
 	// 4. Handle OAuth callback
 	if requestURL.Path == f.config.CallbackPath {
-		f.handleOAuthProviderAuthCallback(requestURL)
+		f.handleOauthProviderAuthCallback(requestURL)
 		return api.Continue
 	}
 
@@ -173,7 +173,7 @@ func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream 
 	}
 
 	// 6. Redirect to OAuth if not authenticated
-	f.redirectToOAuthProvider(requestURL)
+	f.handleOauthProviderRedirection(requestURL)
 	return api.Continue
 }
 
