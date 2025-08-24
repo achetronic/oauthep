@@ -109,6 +109,18 @@ static_resources:
                             - "profile"
                             - "email"
 
+                          # CEL expressions to fine tune allowance. JWT payload is available under object 'payload'
+                          #- expression: 'payload.groups.exists(group, group in ["admin", "editor"])'
+                          #- expression: 'has(payload.email) && payload.email.endsWith("@example.com")'
+                          oauth_claim_allow_conditions:
+                            - expression: 'has(payload.iss) && payload.iss == "https://auth.mycompany.com"'
+
+                            - expression: 'has(payload.email_verified) && payload.email_verified == true'
+                            - expression: 'has(payload.email) && payload.email.endsWith("@example.com")'
+
+                            - expression: 'has(payload.sub) && payload.sub != ""'
+                            - expression: 'has(payload.aud) && payload.aud == "my-api"'
+
                           # Session cookie configuration
                           session_cookie_prefix: "oauthep_"
                           session_cookie_domain: ""

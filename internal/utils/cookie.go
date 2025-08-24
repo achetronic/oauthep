@@ -99,6 +99,7 @@ func ExtractCookieValue(cookieHeader, name string) string {
 }
 
 // GenerateCleanCookiesHeader TODO
+// TODO: Refactor this to do it make more sense being here
 func GenerateCleanCookiesHeader(cookieNamePrefix, cookiePath string) (responseHeader []string) {
 
 	// Set the cookies for the user
@@ -108,8 +109,7 @@ func GenerateCleanCookiesHeader(cookieNamePrefix, cookiePath string) (responseHe
 	}
 
 	//
-	cookiesToDelete := []string{CookieNameAccessToken, CookieNameIdToken, CookieNameRefreshToken}
-	for _, cookieName := range cookiesToDelete {
+	for _, cookieName := range CookiesToHandle {
 		cookieContent.Name = cookieName
 		cookieValue := CreateCookieContent(cookieContent)
 		responseHeader = append(responseHeader, cookieValue)

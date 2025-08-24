@@ -22,11 +22,8 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"math/big"
-	"strings"
-
 	//
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -59,97 +56,65 @@ func IsParsableAsJWT(tokenString string) bool {
 	return err == nil
 }
 
-func ValidateJsonWebToken(jwks *JWKS, token string) error {
+func ValidateJsonWebToken(jwks *JWKS, token string) (*jwt.Token, error) {
 
-	// Get JWT header
-	header, err := parseJWTHeader(token)
-	if err != nil {
-		return fmt.Errorf("error parsing token: %v", err)
-	}
-
-	// Retrieve 'Kid' and 'Alg' from token's header
-	kid, ok := header["kid"].(string)
-	if !ok {
-		return fmt.Errorf("jwt header 'kid' field not found")
-	}
-
-	alg, ok := header["alg"].(string)
-	if !ok {
-		return fmt.Errorf("jwt header 'alg' field not found")
-	}
-
-	// Look for the published key with the same Kid as the token
-	var matchingKey *JWK
-	for _, key := range jwks.Keys {
-		if key.Kid == kid && (key.Use == "" || key.Use == "sig") {
-			matchingKey = &key
-			break
-		}
-	}
-
-	if matchingKey == nil {
-		return fmt.Errorf("no matching 'kid' in JWKS")
-	}
-
-	// Algorithm must match
-	if matchingKey.Alg != "" && matchingKey.Alg != alg {
-		return fmt.Errorf("algorithm mismatch")
-	}
-
-	// Convert JWK to a public key of corresponding type (RSA, EC, etc.)
-	publicKey, err := jwkToKey(matchingKey)
-	if err != nil {
-		return fmt.Errorf("error converting JWK to public key")
-	}
-
-	// Validate the token
 	parsedToken, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
+
+		// 1. Look for the key in JWKS the JWT was signed with
+		kid, ok := token.Header["kid"].(string)
+		if !ok {
+			return nil, fmt.Errorf("jwt header 'kid' field not found")
+		}
+
 		//
-		expectedMethod, localErr := getSigningMethod(alg)
-		if localErr != nil {
-			return nil, localErr
+		var matchingKey *JWK
+		for _, key := range jwks.Keys {
+			if key.Kid == kid && (key.Use == "" || key.Use == "sig") {
+				matchingKey = &key
+				break
+			}
+		}
+
+		if matchingKey == nil {
+			return nil, fmt.Errorf("no matching 'kid' in JWKS")
+		}
+
+		// 2. Verify the signature algorithm matching between the JWT and the JWKS
+		alg, ok := token.Header["alg"].(string)
+		if !ok {
+			return nil, fmt.Errorf("jwt header 'alg' field not found")
+		}
+
+		//
+		if matchingKey.Alg != "" && matchingKey.Alg != alg {
+			return nil, fmt.Errorf("algorithm mismatch")
+		}
+
+		// Review whether signing algorithm is supported in our side.
+		// Remember we later translate JWK to a PublicKey and we don't support all the existing algorithms for that.
+		expectedMethod, err := getSigningMethod(alg)
+		if err != nil {
+			return nil, err
 		}
 
 		if token.Method != expectedMethod {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			return nil, fmt.Errorf("unexpected signing method: %v", alg)
+		}
+
+		// Convert the JWK to PublicKey
+		publicKey, err := jwkToPublicKey(matchingKey)
+		if err != nil {
+			return nil, fmt.Errorf("error converting JWK to public key: %v", err)
 		}
 
 		return publicKey, nil
 	})
-	if err != nil {
-		return err
-	}
-	_ = parsedToken // TODO: Shutup
 
-	return nil
+	return parsedToken, err
 }
 
-// parseJWTHeader extracts the header of a JWT without verifying the signature
-// This is used to infer algorithm to be used and the key from the JWKS
-func parseJWTHeader(tokenString string) (map[string]interface{}, error) {
-	//
-	parts := strings.Split(tokenString, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("malformed token: It must be like header.payload.signature")
-	}
-
-	// Extract the header (first part)
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return nil, fmt.Errorf("error decoding header: %s", err.Error())
-	}
-
-	//
-	var header map[string]interface{}
-	if err = json.Unmarshal(headerBytes, &header); err != nil {
-		return nil, fmt.Errorf("error parsing JSON header: %s", err.Error())
-	}
-
-	return header, nil
-}
-
-// jwkToKey calculate corresponding real key (RSA, EC, etc.) from params present in the JWK
-func jwkToKey(jwk *JWK) (interface{}, error) {
+// jwkToPublicKey calculate corresponding real key (RSA, EC, etc.) from params present in the JWK
+func jwkToPublicKey(jwk *JWK) (interface{}, error) {
 	switch jwk.Kty {
 	case "RSA":
 		return jwkToRSAPublicKey(jwk)
@@ -230,7 +195,7 @@ func jwkToECPublicKey(jwk *JWK) (*ecdsa.PublicKey, error) {
 	}, nil
 }
 
-// jwkToSymmetricKey converts a JWK into a simetric key (for HMAC)
+// jwkToSymmetricKey converts a JWK into a symmetric key (for HMAC)
 func jwkToSymmetricKey(jwk *JWK) ([]byte, error) {
 	if jwk.K == "" {
 		return nil, fmt.Errorf("incomplete symmetric key data")

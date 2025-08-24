@@ -19,7 +19,6 @@ package filter
 
 import (
 	"encoding/json"
-	"github.com/google/uuid"
 	"log"
 	"log/slog"
 	"net"
@@ -28,6 +27,8 @@ import (
 
 	//
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/google/cel-go/cel"
+	"github.com/google/uuid"
 	cfg "oauthep/internal/config"
 	"oauthep/internal/utils"
 )
@@ -51,13 +52,19 @@ type HttpFilter struct {
 	logger    *slog.Logger
 
 	// Extra carried stuff
-	compiledExcludedPathsExpressions []*regexp.Regexp
 	trustedProxiesCidrs              []*net.IPNet
 	skipAuthCidrs                    []*net.IPNet
+	compiledExcludedPathsExpressions []*regexp.Regexp
+	celPrograms                      []*cel.Program
 }
 
 func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.StreamFilter {
 
+	log.Print("NewStreamFilter function executed")
+
+	streamFilter := &HttpFilter{}
+
+	//
 	config, ok := c.(*cfg.Configuration)
 	if !ok {
 		log.Fatalf("Unexpected configuration provided")
@@ -81,13 +88,13 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 	// Parse all CIDRs from config
 	trustedProxiesCidrs, err := utils.GetParsedCidrs(config.TrustedProxies)
 	if err != nil {
-		logger.Error("failed parsing trusted_proxies CIDRs: %s", err.Error())
+		logger.Error("failed parsing trusted_proxies CIDRs", "error", err.Error())
 		os.Exit(1)
 	}
 
 	skipAuthCidrs, err := utils.GetParsedCidrs(config.SkipAuthCidr)
 	if err != nil {
-		logger.Error("failed parsing skip_auth_cidr CIDRs: %s", err.Error())
+		logger.Error("failed parsing skip_auth_cidr CIDRs", "error", err.Error())
 		os.Exit(1)
 	}
 
@@ -101,17 +108,42 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 		}
 	}
 
-	//
-	streamFilter := &HttpFilter{
-		callbacks: callbacks,
-		config:    *config,
+	// Precompile and check CEL expressions to fail-fast and safe resources.
+	// They will be truly used later.
+	allowConditionsEnv, err := cel.NewEnv(
+		cel.Variable("payload", cel.DynType),
+	)
+	if err != nil {
+		logger.Error("cel environment creation error", "error", err.Error())
+		os.Exit(1)
 
-		//
-		logger:                           logger,
-		compiledExcludedPathsExpressions: compiledRegex,
-		trustedProxiesCidrs:              trustedProxiesCidrs,
-		skipAuthCidrs:                    skipAuthCidrs,
 	}
+
+	for _, allowCondition := range config.OauthClaimAllowConditions {
+
+		// Compile and prepare the expressions
+		ast, issues := allowConditionsEnv.Compile(allowCondition.Expression)
+		if issues != nil && issues.Err() != nil {
+			logger.Error("cel expression compilation exited with error", "error", issues.Err())
+			os.Exit(1)
+		}
+
+		prg, err := allowConditionsEnv.Program(ast)
+		if err != nil {
+			logger.Error("cel program construction error", "error", err.Error())
+			os.Exit(1)
+		}
+		_ = prg
+		streamFilter.celPrograms = append(streamFilter.celPrograms, &prg)
+	}
+
+	//
+	streamFilter.callbacks = callbacks
+	streamFilter.config = *config
+	streamFilter.logger = logger
+	streamFilter.trustedProxiesCidrs = trustedProxiesCidrs
+	streamFilter.skipAuthCidrs = skipAuthCidrs
+	streamFilter.compiledExcludedPathsExpressions = compiledRegex
 
 	// Some configuration params can be expanded by using Env or SDS.
 	// This can only happen on runtime after initializing the filter.

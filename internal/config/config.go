@@ -37,6 +37,11 @@ var (
 	Providers = []string{ProviderOpenid, ProviderGoogle}
 )
 
+// ClaimAllowCondition represents a condition for allowing a request after the local JWT validation
+type ClaimAllowCondition struct {
+	Expression string `json:"expression"`
+}
+
 // Configuration TODO
 type Configuration struct {
 	// LogFormat represents the format of the logs
@@ -70,15 +75,16 @@ type Configuration struct {
 	Provider string `json:"provider,omitempty"`
 
 	//
-	OauthAuthUri       string   `json:"oauth_auth_uri"`
-	OauthTokenUri      string   `json:"oauth_token_uri"`
-	OauthJwksUri       string   `json:"oauth_jwks_uri"`
-	OauthJwksCacheTTL  string   `json:"oauth_jwks_cache_ttl,omitempty"`
-	OauthJwksCacheFile string   `json:"oauth_jwks_cache_file,omitempty"`
-	OauthClientId      string   `json:"oauth_client_id"`
-	OauthClientSecret  string   `json:"oauth_client_secret"`
-	OauthRedirectUri   string   `json:"oauth_redirect_uri"`
-	OauthScopes        []string `json:"oauth_scopes,omitempty"`
+	OauthAuthUri              string                `json:"oauth_auth_uri"`
+	OauthTokenUri             string                `json:"oauth_token_uri"`
+	OauthJwksUri              string                `json:"oauth_jwks_uri"`
+	OauthJwksCacheTTL         string                `json:"oauth_jwks_cache_ttl,omitempty"`
+	OauthJwksCacheFile        string                `json:"oauth_jwks_cache_file,omitempty"`
+	OauthClientId             string                `json:"oauth_client_id"`
+	OauthClientSecret         string                `json:"oauth_client_secret"`
+	OauthRedirectUri          string                `json:"oauth_redirect_uri"`
+	OauthScopes               []string              `json:"oauth_scopes,omitempty"`
+	OauthClaimAllowConditions []ClaimAllowCondition `json:"oauth_claim_allow_conditions,omitempty"`
 
 	//
 	SessionCookiePrefix   string `json:"session_cookie_prefix,omitempty"`
@@ -116,9 +122,10 @@ func NewConfigWithDefaults() *Configuration {
 		Provider: ProviderOpenid,
 
 		//
-		OauthJwksCacheTTL:  "10m",
-		OauthJwksCacheFile: "/tmp/jwks_cache.json",
-		OauthScopes:        []string{"openid", "profile", "email"},
+		OauthJwksCacheTTL:         "10m",
+		OauthJwksCacheFile:        "/tmp/jwks_cache.json",
+		OauthScopes:               []string{"openid", "profile", "email"},
+		OauthClaimAllowConditions: []ClaimAllowCondition{},
 
 		//
 		SessionCookiePrefix:   "oauthep_",
