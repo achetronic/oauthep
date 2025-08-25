@@ -8,6 +8,8 @@
 ![GitHub User's stars](https://img.shields.io/github/stars/achetronic?label=Achetronic%20Stars)
 ![GitHub followers](https://img.shields.io/github/followers/achetronic?label=Achetronic%20Followers)
 
+<img src="https://raw.githubusercontent.com/achetronic/oauthep/master/docs/img/error-page.png" alt="Oauthep Header (Main) logo." width="100%">
+
 > [!IMPORTANT]  
 > This is a Go extension plugin for Envoy Proxy using the native Golang filter support.
 > [How it works](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/golang_filter)
