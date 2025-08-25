@@ -32,8 +32,8 @@ this is the plugin you're looking for.
 
 ## Features
 
-- **Complete OAuth2/OIDC flow**: Authorization code flow
-- **JWT token validation**: Automatic JWKS fetching and caching
+- **Complete OAuth2/OIDC flow**: Authorization code flow, Refresh tokens flow
+- **JWT token validation**: Automatic JWKS fetching and caching, CEL expressions claims evaluation
 - **Session management**: Secure session cookies with configurable duration
 - **Flexible routing**: Skip authentication for specific paths or CIDRs (health checks, static assets)
 - **Multiple secret sources**: Literal values, environment variables, or SDS (Secret Discovery Service)
