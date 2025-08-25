@@ -22,6 +22,7 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"regexp"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/google/uuid"
 	cfg "oauthep/internal/config"
+	"oauthep/internal/flowcontext"
 	"oauthep/internal/utils"
 )
 
@@ -58,7 +60,7 @@ type HttpFilter struct {
 	celPrograms                      []*cel.Program
 
 	// Auth flow per-request stuff
-	authContext *AuthContext
+	flowContext *flowcontext.FlowContext
 }
 
 func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.StreamFilter {
@@ -186,10 +188,10 @@ func (f *HttpFilter) DecodeHeaders(requestHeaders api.RequestHeaderMap, endStrea
 	}
 
 	// 3. Recover auth context
-	f.authContext, err = f.getAuthContextFromCookies(requestHeaders)
+	f.flowContext, err = f.getFlowContextFromCookies(requestHeaders)
 	if err != nil {
 		f.logger.Warn("failed to get auth context, creating new", "error", err.Error())
-		f.authContext = &AuthContext{}
+		f.flowContext = &flowcontext.FlowContext{}
 	}
 
 	// 4. Handle logout
@@ -198,33 +200,42 @@ func (f *HttpFilter) DecodeHeaders(requestHeaders api.RequestHeaderMap, endStrea
 		return api.Continue
 	}
 
-	// 5. Handle OAuth callback
-	if requestURL.Path == f.config.CallbackPath {
-		f.handleOauthProviderAuthCallback(requestURL)
-		return api.Continue
-	}
-
-	// 6. Handle error
+	// 5. Handle error
 	if requestURL.Path == f.config.ErrorPath {
-		f.handleError(requestHeaders)
+		f.handleError()
 		return api.Continue
 	}
 
-	// 7. Handle error redirection
-	if f.shouldRedirectToError() {
-		f.handleErrorRedirect()
+	// 6. Handle OAuth callback
+	if requestURL.Path == f.config.CallbackPath {
+		err = f.handleOauthProviderAuthCallback(requestURL)
+		if err != nil {
+
+			if f.shouldShowErrorPage(err) {
+				f.handleErrorRedirect()
+				return api.Continue
+			}
+
+			// TODO: Make these errors with 5XX more user-friendly
+			f.logger.Error("technical error in oauth callback", "error", err.Error())
+			f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+				http.StatusInternalServerError,
+				"Technical error. Please try again.",
+				map[string][]string{}, -1, "")
+		}
+
 		return api.Continue
 	}
 
 	// 7. Validate the token
 	err = f.checkRequestAuthentication(requestHeaders)
 	if err != nil {
-		f.logger.Error("failed checking request authentication", "error", err.Error())
-
-		// Existing previous errors? may be looped
-		if f.authContext.Attempts > 0 {
-			f.authContext.WithErrorCode(ErrorCodeRedirectLoop)
+		if f.shouldShowErrorPage(err) {
+			f.handleErrorRedirect()
+			return api.Continue
 		}
+
+		f.logger.Error("failed checking request authentication", "error", err.Error())
 	}
 
 	if err == nil {

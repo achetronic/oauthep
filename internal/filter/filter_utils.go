@@ -27,66 +27,27 @@ import (
 	"net/http"
 	"net/url"
 	"oauthep/internal/config"
+	"oauthep/internal/flowcontext"
 	"oauthep/internal/validator"
 	"os"
 	"reflect"
 	"regexp"
 	"slices"
 	"strings"
-	"time"
-
 	//
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"github.com/golang-jwt/jwt/v5"
 	"oauthep/internal/utils"
 )
 
-const (
-	// TODO: Move this to another place.
-	// Error codes for AuthContext
-
-	ErrorCodeTokenInvalid = 1 // Token structurally invalid
-	ErrorCodeStateInvalid = 2 // State validation failed (CSRF)
-	ErrorCodeRedirectLoop = 3 // Too many redirects detected
-)
-
 var (
 	CompiledConfigExpansionEnvExpression = regexp.MustCompile(`\$\{env:([^}]+)\}`)
 	CompiledConfigExpansionSdsExpression = regexp.MustCompile(`\$\{sds:([^}]+)\}`)
-
-	// TODO: Move this to another place
-
-	ErrorCodeMessages = map[int]string{
-		ErrorCodeTokenInvalid: "Invalid authentication token",
-		ErrorCodeStateInvalid: "Invalid authentication state",
-		ErrorCodeRedirectLoop: "Too many authentication attempts",
-	}
 )
 
-// AuthContext structure for cookie storage
-type AuthContext struct {
-	Attempts     int   `json:"attempts"`
-	FirstAttempt int64 `json:"first_attempt"`
-	ErrorCode    int   `json:"error_code"`
-}
-
-// WithErrorCode sets error code and automatically increments attempts
-func (ctx *AuthContext) WithErrorCode(code int) *AuthContext {
-	ctx.ErrorCode = code
-	ctx.Attempts++
-	if ctx.FirstAttempt == 0 {
-		ctx.FirstAttempt = time.Now().Unix()
-	}
-	return ctx
-}
-
-// Reset clears the context
-func (ctx *AuthContext) Reset() *AuthContext {
-	ctx.Attempts = 0
-	ctx.FirstAttempt = 0
-	ctx.ErrorCode = 0
-	return ctx
-}
+///////////////////////////////////////////////////
+// EXPERIMENT PRIOR
+///////////////////////////////////////////////////
 
 func (f *HttpFilter) expandConfigurationStringField(value string) string {
 
@@ -167,12 +128,12 @@ func (f *HttpFilter) expandConfigurationPlaceholders() {
 }
 
 // logHeaders log all the request/response headers excluding those set in configuration
-func (f *HttpFilter) logHeaders(reqHeaderMap api.RequestHeaderMap, resHeaderMap api.ResponseHeaderMap) {
+func (f *HttpFilter) logHeaders(requestHeaders api.RequestHeaderMap, resHeaderMap api.ResponseHeaderMap) {
 	if !f.config.LogAllHeaders {
 		return
 	}
 
-	allReqHeaders := reqHeaderMap.GetAllHeaders()
+	allReqHeaders := requestHeaders.GetAllHeaders()
 	var headerLogAttrs []interface{}
 
 	for headerKey, headerValues := range allReqHeaders {
@@ -243,11 +204,41 @@ func (f *HttpFilter) shouldSkipAuthFromIp(xffHeaderValue []string) (bool, error)
 	return utils.IsTrustedIp(f.skipAuthCidrs, clientRealIp), nil
 }
 
+// shouldShowErrorPage processes the error, updates context and decides action
+func (f *HttpFilter) shouldShowErrorPage(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var stateErr StateInvalidError
+	var tokenErr TokenInvalidError
+	var claimsErr ClaimsFailedError
+
+	if f.flowContext.HasSameErrorLoop() {
+		f.flowContext.WithErrorCode(ErrorCodeRepeatedErrorLoop)
+		return true
+	} else if f.flowContext.HasTooManyErrors(flowcontext.MaxAttempts, flowcontext.AttemptWindow) {
+		f.flowContext.WithErrorCode(ErrorCodeDifferentErrorLoop)
+		return true
+	} else if errors.As(err, &stateErr) {
+		f.flowContext.WithErrorCode(ErrorCodeStateInvalid)
+		return true
+	} else if errors.As(err, &tokenErr) {
+		f.flowContext.WithErrorCode(ErrorCodeTokenInvalid)
+		return true
+	} else if errors.As(err, &claimsErr) {
+		f.flowContext.WithErrorCode(ErrorCodeClaimsFailed)
+		return true
+	}
+
+	return false
+}
+
 // getCookies return a map with plugin-related cookies.
 // This function only processes cookies pre-registered in utils.CookiesToHandle
-func (f *HttpFilter) getCookies(reqHeaderMap api.RequestHeaderMap) (map[string]string, error) {
+func (f *HttpFilter) getCookies(requestHeaders api.RequestHeaderMap) (map[string]string, error) {
 	// Extract cookies
-	cookieHeader, found := reqHeaderMap.Get(utils.CookieRequestHeaderName)
+	cookieHeader, found := requestHeaders.Get(utils.CookieRequestHeaderName)
 	if !found {
 		return nil, fmt.Errorf("cookie header not found")
 	}
@@ -277,6 +268,38 @@ func (f *HttpFilter) getCookies(reqHeaderMap api.RequestHeaderMap) (map[string]s
 	}
 
 	return cookieNameToContentMap, nil
+}
+
+// getFlowContextFromCookies retrieves and decrypts auth context from cookies
+func (f *HttpFilter) getFlowContextFromCookies(requestHeaders api.RequestHeaderMap) (*flowcontext.FlowContext, error) {
+	// Get all cookies
+	cookieMap, err := f.getCookies(requestHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("failed getting cookies: %w", err)
+	}
+
+	// Look for context cookie
+	encodedContext, exists := cookieMap[utils.CookieNameContext]
+	if !exists || encodedContext == "" {
+		// Return empty context if no cookie found
+		return &flowcontext.FlowContext{}, nil
+	}
+
+	// Decrypt and decode
+	decryptedBytes, err := utils.DecryptData(encodedContext, f.config.OauthClientSecret)
+	if err != nil {
+		f.logger.Warn("failed to decrypt auth context, returning empty", "error", err.Error())
+		return &flowcontext.FlowContext{}, nil
+	}
+
+	var context flowcontext.FlowContext
+	err = json.Unmarshal(decryptedBytes, &context)
+	if err != nil {
+		f.logger.Warn("failed to unmarshal auth context, returning empty", "error", err.Error())
+		return &flowcontext.FlowContext{}, nil
+	}
+
+	return &context, nil
 }
 
 // setCookies set cookies with the content of cookieData map. It maps cookie's name -> content
@@ -332,6 +355,28 @@ func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens 
 	return f.setCookies(responseHeaders, cookieData)
 }
 
+// setFlowContextInCookies encrypts and stores auth context in response headers
+func (f *HttpFilter) setFlowContextInCookies(responseHeaders map[string][]string, context *flowcontext.FlowContext) error {
+	// Serialize context
+	jsonBytes, err := json.Marshal(context)
+	if err != nil {
+		return fmt.Errorf("failed to marshal context: %w", err)
+	}
+
+	// Encrypt
+	encodedContext, err := utils.EncryptData(jsonBytes, f.config.OauthClientSecret)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt context: %w", err)
+	}
+
+	// Set cookie using existing function
+	cookieData := map[string]string{
+		utils.CookieNameContext: encodedContext,
+	}
+
+	return f.setCookies(responseHeaders, cookieData)
+}
+
 // refreshAccessToken perform a request to refresh the tokens and return the response as bytes
 func (f *HttpFilter) refreshAccessToken(refreshToken string) ([]byte, error) {
 	data := url.Values{}
@@ -369,7 +414,7 @@ func (f *HttpFilter) refreshAccessToken(refreshToken string) ([]byte, error) {
 
 // checkRequestAuthentication retrieve the tokens from the cookies and validate them.
 // When they are expired, try to refresh and store them in Envoy's metadata.
-func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMap) error {
+func (f *HttpFilter) checkRequestAuthentication(requestHeaders api.RequestHeaderMap) error {
 
 	////////////////////////////
 	// Validation phase
@@ -382,7 +427,7 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 	}
 
 	// Extract cookies
-	cookieNameToContentMap, err := f.getCookies(reqHeaderMap)
+	cookieNameToContentMap, err := f.getCookies(requestHeaders)
 	if err != nil {
 		return fmt.Errorf("failed getting tokens from cookies: %s", err.Error())
 	}
@@ -403,11 +448,10 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 	// Critical validation issue: Token structurally invalid
 	// These cannot be fixed with refresh
 	if parsedToken == nil {
-		f.authContext.WithErrorCode(ErrorCodeTokenInvalid)
 		if validationError != nil {
-			return fmt.Errorf("token structurally invalid: %s", validationError.Error())
+			return TokenInvalidError{Reason: fmt.Sprintf("token structurally invalid: %s", validationError.Error())}
 		}
-		return fmt.Errorf("token structurally invalid: unknown error")
+		return TokenInvalidError{Reason: "token structurally invalid: unknown error"}
 	}
 
 	////////////////////////////
@@ -425,7 +469,7 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 		}
 
 		if out.Value() != true {
-			return fmt.Errorf("claim does not meet cel conditions")
+			return ClaimsFailedError{Reason: "claim does not meet cel conditions"}
 		}
 	}
 
@@ -438,9 +482,9 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 		return nil
 	}
 
-	// Token passes CEL but has validation issues - check if it's just expiration
+	// Token passes CEL but has non-expiration validation issues.
+	// We can not fix it by refreshing
 	if !errors.As(validationError, &jwt.ErrTokenExpired) {
-		// Not expiration - some other issue we can't fix with refresh
 		return fmt.Errorf("token validation failed: %s", validationError.Error())
 	}
 
@@ -466,84 +510,4 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 	f.callbacks.StreamInfo().DynamicMetadata().Set("oauthep", "new_tokens", string(newTokensBytes))
 
 	return nil
-}
-
-////////////////////////////////////////////////////
-// Experiments from here
-////////////////////////////////////////////////////
-
-// getAuthContextFromCookies retrieves and decrypts auth context from cookies
-func (f *HttpFilter) getAuthContextFromCookies(reqHeaderMap api.RequestHeaderMap) (*AuthContext, error) {
-	// Get all cookies
-	cookieMap, err := f.getCookies(reqHeaderMap)
-	if err != nil {
-		return nil, fmt.Errorf("failed getting cookies: %w", err)
-	}
-
-	// Look for context cookie
-	encodedContext, exists := cookieMap[utils.CookieNameContext]
-	if !exists || encodedContext == "" {
-		// Return empty context if no cookie found
-		return &AuthContext{}, nil
-	}
-
-	// Decrypt and decode
-	decryptedBytes, err := utils.DecryptData(encodedContext, f.config.OauthClientSecret)
-	if err != nil {
-		f.logger.Warn("failed to decrypt auth context, returning empty", "error", err.Error())
-		return &AuthContext{}, nil
-	}
-
-	var context AuthContext
-	err = json.Unmarshal(decryptedBytes, &context)
-	if err != nil {
-		f.logger.Warn("failed to unmarshal auth context, returning empty", "error", err.Error())
-		return &AuthContext{}, nil
-	}
-
-	return &context, nil
-}
-
-// setAuthContextInCookies encrypts and stores auth context in response headers
-func (f *HttpFilter) setAuthContextInCookies(responseHeaders map[string][]string, context *AuthContext) error {
-	// Serialize context
-	jsonBytes, err := json.Marshal(context)
-	if err != nil {
-		return fmt.Errorf("failed to marshal context: %w", err)
-	}
-
-	// Encrypt
-	encodedContext, err := utils.EncryptData(jsonBytes, f.config.OauthClientSecret)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt context: %w", err)
-	}
-
-	// Set cookie using existing function
-	cookieData := map[string]string{
-		utils.CookieNameContext: encodedContext,
-	}
-
-	return f.setCookies(responseHeaders, cookieData)
-}
-
-const (
-	MaxAuthAttempts = 3
-	AttemptWindow   = 5 * 60 // 5 minutes in seconds
-)
-
-// shouldRedirectToError determines if we should show error page instead of redirecting to login
-func (f *HttpFilter) shouldRedirectToError() bool {
-	if f.authContext == nil {
-		return false
-	}
-
-	now := time.Now().Unix()
-
-	// When too many attempts happened in time window
-	if f.authContext.Attempts >= MaxAuthAttempts &&
-		now-f.authContext.FirstAttempt <= AttemptWindow {
-		return true
-	}
-
-	return false
 }
