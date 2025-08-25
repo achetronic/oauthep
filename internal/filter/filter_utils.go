@@ -19,14 +19,13 @@ package filter
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
-	"oauthep/internal/config"
-	"oauthep/internal/validator"
 	"os"
 	"reflect"
 	"regexp"
@@ -36,7 +35,10 @@ import (
 	//
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"github.com/golang-jwt/jwt/v5"
+	"oauthep/internal/config"
+	"oauthep/internal/flowcontext"
 	"oauthep/internal/utils"
+	"oauthep/internal/validator"
 )
 
 var (
@@ -123,12 +125,12 @@ func (f *HttpFilter) expandConfigurationPlaceholders() {
 }
 
 // logHeaders log all the request/response headers excluding those set in configuration
-func (f *HttpFilter) logHeaders(reqHeaderMap api.RequestHeaderMap, resHeaderMap api.ResponseHeaderMap) {
+func (f *HttpFilter) logHeaders(requestHeaders api.RequestHeaderMap, resHeaderMap api.ResponseHeaderMap) {
 	if !f.config.LogAllHeaders {
 		return
 	}
 
-	allReqHeaders := reqHeaderMap.GetAllHeaders()
+	allReqHeaders := requestHeaders.GetAllHeaders()
 	var headerLogAttrs []interface{}
 
 	for headerKey, headerValues := range allReqHeaders {
@@ -199,11 +201,41 @@ func (f *HttpFilter) shouldSkipAuthFromIp(xffHeaderValue []string) (bool, error)
 	return utils.IsTrustedIp(f.skipAuthCidrs, clientRealIp), nil
 }
 
-// getAuthCookies return a map with common auth cookies retrieved from cookies
-// auth cookies: access_token, id_token, refresh_token
-func (f *HttpFilter) getAuthCookies(reqHeaderMap api.RequestHeaderMap) (map[string]string, error) {
+// shouldShowErrorPage processes the error, updates context and decides action
+func (f *HttpFilter) shouldShowErrorPage(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var stateErr StateInvalidError
+	var tokenErr TokenInvalidError
+	var claimsErr ClaimsFailedError
+
+	if f.flowContext.HasSameErrorLoop() {
+		f.flowContext.WithErrorCode(ErrorCodeRepeatedErrorLoop)
+		return true
+	} else if f.flowContext.HasTooManyErrors(flowcontext.MaxAttempts, flowcontext.AttemptWindow) {
+		f.flowContext.WithErrorCode(ErrorCodeDifferentErrorLoop)
+		return true
+	} else if errors.As(err, &stateErr) {
+		f.flowContext.WithErrorCode(ErrorCodeStateInvalid)
+		return true
+	} else if errors.As(err, &tokenErr) {
+		f.flowContext.WithErrorCode(ErrorCodeTokenInvalid)
+		return true
+	} else if errors.As(err, &claimsErr) {
+		f.flowContext.WithErrorCode(ErrorCodeClaimsFailed)
+		return true
+	}
+
+	return false
+}
+
+// getCookies return a map with plugin-related cookies.
+// This function only processes cookies pre-registered in utils.CookiesToHandle
+func (f *HttpFilter) getCookies(requestHeaders api.RequestHeaderMap) (map[string]string, error) {
 	// Extract cookies
-	cookieHeader, found := reqHeaderMap.Get(utils.CookieRequestHeaderName)
+	cookieHeader, found := requestHeaders.Get(utils.CookieRequestHeaderName)
 	if !found {
 		return nil, fmt.Errorf("cookie header not found")
 	}
@@ -235,9 +267,41 @@ func (f *HttpFilter) getAuthCookies(reqHeaderMap api.RequestHeaderMap) (map[stri
 	return cookieNameToContentMap, nil
 }
 
-// setAuthCookies set auth cookies in passed response headers.
-// Values for auth cookies are passed as an OauthTokenEndpointResponse object
-func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens *OauthTokenEndpointResponse) error {
+// getFlowContextFromCookies retrieves and decrypts auth context from cookies
+func (f *HttpFilter) getFlowContextFromCookies(requestHeaders api.RequestHeaderMap) (*flowcontext.FlowContext, error) {
+	// Get all cookies
+	cookieMap, err := f.getCookies(requestHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("failed getting cookies: %w", err)
+	}
+
+	// Look for context cookie
+	encodedContext, exists := cookieMap[utils.CookieNameContext]
+	if !exists || encodedContext == "" {
+		// Return empty context if no cookie found
+		return &flowcontext.FlowContext{}, nil
+	}
+
+	// Decrypt and decode
+	decryptedBytes, err := utils.DecryptData(encodedContext, f.config.OauthClientSecret)
+	if err != nil {
+		f.logger.Warn("failed to decrypt auth context, returning empty", "error", err.Error())
+		return &flowcontext.FlowContext{}, nil
+	}
+
+	var context flowcontext.FlowContext
+	err = json.Unmarshal(decryptedBytes, &context)
+	if err != nil {
+		f.logger.Warn("failed to unmarshal auth context, returning empty", "error", err.Error())
+		return &flowcontext.FlowContext{}, nil
+	}
+
+	return &context, nil
+}
+
+// setCookies set cookies with the content of cookieData map. It maps cookie's name -> content
+// This function only processes cookies pre-registered in utils.CookiesToHandle
+func (f *HttpFilter) setCookies(responseHeaders map[string][]string, cookieData map[string]string, cookieContentOverrides ...utils.CookieContent) error {
 
 	cookieContent := utils.CookieContent{
 		Prefix:   f.config.SessionCookiePrefix,
@@ -249,15 +313,30 @@ func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens 
 		Duration: f.config.SessionCookieDuration,
 	}
 
-	cookieNameToContentMap := map[string]string{
-		utils.CookieNameAccessToken:  tokens.AccessToken,
-		utils.CookieNameIdToken:      tokens.IdToken,
-		utils.CookieNameRefreshToken: tokens.RefreshToken,
+	// Apply overrides to passed fields
+	for _, cookieContentOverride := range cookieContentOverrides {
+		overrideValue := reflect.ValueOf(cookieContentOverride)
+		cookieContentValue := reflect.ValueOf(&cookieContent).Elem()
+		overrideType := reflect.TypeOf(cookieContentOverride)
+
+		for i := 0; i < overrideValue.NumField(); i++ {
+			field := overrideValue.Field(i)
+			fieldName := overrideType.Field(i).Name
+
+			// Just override fields that has actually a value
+			if !field.IsZero() {
+				cookieContentField := cookieContentValue.FieldByName(fieldName)
+				if cookieContentField.CanSet() {
+					cookieContentField.Set(field)
+				}
+			}
+		}
 	}
 
+	// Iterate only over registered cookies
 	for _, cookieName := range utils.CookiesToHandle {
 
-		cookiePayload := cookieNameToContentMap[cookieName]
+		cookiePayload := cookieData[cookieName]
 		if cookiePayload == "" {
 			continue
 		}
@@ -265,7 +344,7 @@ func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens 
 		cookieContent.Name = cookieName
 		cookieContent.Payload = cookiePayload
 
-		//
+		// Compress only JWTs
 		if f.config.SessionCookieCompressionEnabled && validator.IsParsableAsJWT(cookiePayload) {
 			compressedPayload, err := utils.CompressJWT(cookiePayload)
 			if err != nil {
@@ -279,6 +358,39 @@ func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens 
 	}
 
 	return nil
+}
+
+// setAuthCookies set auth cookies in passed response headers.
+// Values for auth cookies are passed as an OauthTokenEndpointResponse object
+func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens *OauthTokenEndpointResponse) error {
+	cookieData := map[string]string{
+		utils.CookieNameAccessToken:  tokens.AccessToken,
+		utils.CookieNameIdToken:      tokens.IdToken,
+		utils.CookieNameRefreshToken: tokens.RefreshToken,
+	}
+	return f.setCookies(responseHeaders, cookieData)
+}
+
+// setFlowContextInCookies encrypts and stores auth context in response headers
+func (f *HttpFilter) setFlowContextInCookies(responseHeaders map[string][]string, context *flowcontext.FlowContext) error {
+	// Serialize context
+	jsonBytes, err := json.Marshal(context)
+	if err != nil {
+		return fmt.Errorf("failed to marshal context: %w", err)
+	}
+
+	// Encrypt
+	encodedContext, err := utils.EncryptData(jsonBytes, f.config.OauthClientSecret)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt context: %w", err)
+	}
+
+	// Set cookie using existing function
+	cookieData := map[string]string{
+		utils.CookieNameContext: encodedContext,
+	}
+
+	return f.setCookies(responseHeaders, cookieData, utils.CookieContent{Duration: "10m"})
 }
 
 // refreshAccessToken perform a request to refresh the tokens and return the response as bytes
@@ -318,7 +430,7 @@ func (f *HttpFilter) refreshAccessToken(refreshToken string) ([]byte, error) {
 
 // checkRequestAuthentication retrieve the tokens from the cookies and validate them.
 // When they are expired, try to refresh and store them in Envoy's metadata.
-func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMap) error {
+func (f *HttpFilter) checkRequestAuthentication(requestHeaders api.RequestHeaderMap) error {
 
 	////////////////////////////
 	// Validation phase
@@ -331,7 +443,7 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 	}
 
 	// Extract cookies
-	cookieNameToContentMap, err := f.getAuthCookies(reqHeaderMap)
+	cookieNameToContentMap, err := f.getCookies(requestHeaders)
 	if err != nil {
 		return fmt.Errorf("failed getting tokens from cookies: %s", err.Error())
 	}
@@ -353,9 +465,9 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 	// These cannot be fixed with refresh
 	if parsedToken == nil {
 		if validationError != nil {
-			return fmt.Errorf("token structurally invalid: %s", validationError.Error())
+			return TokenInvalidError{Reason: fmt.Sprintf("token structurally invalid: %s", validationError.Error())}
 		}
-		return fmt.Errorf("token structurally invalid: unknown error")
+		return TokenInvalidError{Reason: "token structurally invalid: unknown error"}
 	}
 
 	////////////////////////////
@@ -373,7 +485,7 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 		}
 
 		if out.Value() != true {
-			return fmt.Errorf("claim does not meet cel conditions")
+			return ClaimsFailedError{Reason: "claim does not meet cel conditions"}
 		}
 	}
 
@@ -386,9 +498,9 @@ func (f *HttpFilter) checkRequestAuthentication(reqHeaderMap api.RequestHeaderMa
 		return nil
 	}
 
-	// Token passes CEL but has validation issues - check if it's just expiration
+	// Token passes CEL but has non-expiration validation issues.
+	// We can not fix it by refreshing
 	if !errors.As(validationError, &jwt.ErrTokenExpired) {
-		// Not expiration - some other issue we can't fix with refresh
 		return fmt.Errorf("token validation failed: %s", validationError.Error())
 	}
 

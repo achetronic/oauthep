@@ -48,32 +48,67 @@ func (f *HttpFilter) handleLogout() {
 		"")
 }
 
+// handleErrorRedirect handle the redirection to the actual error page sending the FlowContext cookie to the user
+func (f *HttpFilter) handleErrorRedirect() {
+	responseHeaders := map[string][]string{
+		"Location":      {f.config.ErrorPath},
+		"Cache-Control": {"no-cache, no-store, must-revalidate"},
+	}
+
+	// Build and set context cookie
+	err := f.setFlowContextInCookies(responseHeaders, f.flowContext)
+	if err != nil {
+		f.logger.Debug("failed setting flow context cookie to the user")
+	}
+
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(302,
+		"Redirecting to error page", responseHeaders, -1, "")
+}
+
+// handleError shows an error page to the user. It gets the content from the FlowContext
+func (f *HttpFilter) handleError() {
+
+	f.logger.Debug("Handling error page request", "auth_context", f.flowContext)
+
+	// Parent function will handle context retrieval from cookies.
+	// AuthContext is already stored in the filter object.
+	// Just make it shine, bruh.
+
+	//
+	var errCode int
+	if len(f.flowContext.Errors) > 0 {
+		errCode = f.flowContext.Errors[len(f.flowContext.Errors)-1].Code
+	} else {
+		errCode = ErrorCodeNoErrorFound
+	}
+
+	//
+	responseHeaders := map[string][]string{
+		"Content-Type":  {"text/html; charset=utf-8"},
+		"Cache-Control": {"no-cache, no-store, must-revalidate"},
+		"Pragma":        {"no-cache"},
+		"Expires":       {"0"},
+	}
+	errorPageContent := f.generateErrorPageHTML(errCode, f.flowContext.Attempts)
+
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(200,
+		errorPageContent, responseHeaders, -1, "")
+}
+
 // handleOauthProviderAuthCallback handles callback->code<->token exchange flow between the plugin and OpenID provider.
-func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) {
-
-	var err error
-
-	defer func() {
-		if err != nil {
-			f.logger.Error("failed handling oauth provider auth callback", "error", err.Error())
-			f.callbacks.DecoderFilterCallbacks().SendLocalReply(http.StatusInternalServerError, "Authentication failed. Please try logging in again.",
-				map[string][]string{}, -1, "")
-		}
-	}()
+func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) (err error) {
 
 	code := currentUrl.Query().Get("code")
 	state := currentUrl.Query().Get("state")
 
 	if strings.EqualFold(code, "") || strings.EqualFold(state, "") {
-		err = fmt.Errorf(`code or state not found in URI`)
-		return
+		return fmt.Errorf(`code or state not found in URI`)
 	}
 
 	//
 	originalUrlFromState, stateValid := utils.ValidateState(f.config.OauthClientSecret, state)
 	if !stateValid {
-		err = fmt.Errorf(`failed validating state. Try again from the beginning`)
-		return
+		return StateInvalidError{Reason: "validation failed. Try again from the beginning"}
 	}
 
 	// Check required fields for exchange
@@ -86,8 +121,7 @@ func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) {
 
 	for reqFieldName, reqFieldValue := range tokenRequiredFields {
 		if strings.EqualFold(reqFieldValue, "") {
-			err = fmt.Errorf(`required field empty in code <-> token exchange flow: %s`, reqFieldName)
-			return
+			return fmt.Errorf(`required field empty in code <-> token exchange flow: %s`, reqFieldName)
 		}
 	}
 
@@ -107,8 +141,7 @@ func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) {
 
 	req, err := http.NewRequest(http.MethodPost, f.config.OauthTokenUri, bodyReader)
 	if err != nil {
-		err = fmt.Errorf(`could not create request to token endpoint: %s`, err.Error())
-		return
+		return fmt.Errorf(`could not create request to token endpoint: %s`, err.Error())
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -116,27 +149,23 @@ func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) {
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		err = fmt.Errorf(`error calling token endpoint: %s`, err.Error())
-		return
+		return fmt.Errorf(`error calling token endpoint: %s`, err.Error())
 	}
 
 	//
 	if res.StatusCode > 299 {
-		err = fmt.Errorf(`token endpoint responded with failure. code: %d - status: %s`, res.StatusCode, res.Status)
-		return
+		return fmt.Errorf(`token endpoint responded with failure. code: %d - status: %s`, res.StatusCode, res.Status)
 	}
 
 	resBody, err := io.ReadAll(res.Body)
 	if err != nil {
-		err = fmt.Errorf(`could not read response body from token endpoint: %s`, err.Error())
-		return
+		return fmt.Errorf(`could not read response body from token endpoint: %s`, err.Error())
 	}
 
 	responseObj := &OauthTokenEndpointResponse{}
 	err = json.Unmarshal(resBody, responseObj)
 	if err != nil {
-		err = fmt.Errorf(`failed decoding the response from token endpoint: %s`, err.Error())
-		return
+		return fmt.Errorf(`failed decoding the response from token endpoint: %s`, err.Error())
 	}
 
 	//
@@ -148,12 +177,12 @@ func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) {
 	// Set the cookies in the user browser
 	err = f.setAuthCookies(responseHeaders, responseObj)
 	if err != nil {
-		err = fmt.Errorf("failed setting cookies: %s", err.Error())
-		return
+		return fmt.Errorf("failed setting cookies: %s", err.Error())
 	}
 
 	f.callbacks.DecoderFilterCallbacks().SendLocalReply(302, "Redirecting to the original site",
 		responseHeaders, -1, "")
+	return nil
 }
 
 // handleOauthProviderRedirection remove the cookies and redirect the user to OpenID provider.

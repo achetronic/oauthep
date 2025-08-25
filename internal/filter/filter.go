@@ -22,6 +22,7 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"regexp"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/google/uuid"
 	cfg "oauthep/internal/config"
+	"oauthep/internal/flowcontext"
 	"oauthep/internal/utils"
 )
 
@@ -46,16 +48,19 @@ type HttpFilter struct {
 	// Implement Decoder and Encoder filters at once
 	api.StreamFilter
 
-	//
+	// General stuff (bad naming?)
 	callbacks api.FilterCallbackHandler
 	config    cfg.Configuration
 	logger    *slog.Logger
 
-	// Extra carried stuff
+	// General per-request stuff
 	trustedProxiesCidrs              []*net.IPNet
 	skipAuthCidrs                    []*net.IPNet
 	compiledExcludedPathsExpressions []*regexp.Regexp
 	celPrograms                      []*cel.Program
+
+	// Auth flow per-request stuff
+	flowContext *flowcontext.FlowContext
 }
 
 func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.StreamFilter {
@@ -157,8 +162,8 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 // REQUEST PATH
 ////////////////////////////
 
-func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream bool) api.StatusType {
-	allHeaders := reqHeaderMap.GetAllHeaders()
+func (f *HttpFilter) DecodeHeaders(requestHeaders api.RequestHeaderMap, endStream bool) api.StatusType {
+	allHeaders := requestHeaders.GetAllHeaders()
 
 	// 1. Check excluded CIDRs
 	headerXForwardedFor, _ := allHeaders["x-forwarded-for"]
@@ -182,21 +187,54 @@ func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream 
 		return api.Continue
 	}
 
-	// 3. Handle logout
+	// 3. Recover auth context
+	f.flowContext, err = f.getFlowContextFromCookies(requestHeaders)
+	if err != nil {
+		f.logger.Warn("failed to get auth context, creating new", "error", err.Error())
+		f.flowContext = &flowcontext.FlowContext{}
+	}
+
+	// 4. Handle logout
 	if requestURL.Path == f.config.LogoutPath {
 		f.handleLogout()
 		return api.Continue
 	}
 
-	// 4. Handle OAuth callback
-	if requestURL.Path == f.config.CallbackPath {
-		f.handleOauthProviderAuthCallback(requestURL)
+	// 5. Handle error
+	if requestURL.Path == f.config.ErrorPath {
+		f.handleError()
 		return api.Continue
 	}
 
-	// 5. Validate the token
-	err = f.checkRequestAuthentication(reqHeaderMap)
+	// 6. Handle OAuth callback
+	if requestURL.Path == f.config.CallbackPath {
+		err = f.handleOauthProviderAuthCallback(requestURL)
+		if err != nil {
+
+			if f.shouldShowErrorPage(err) {
+				f.handleErrorRedirect()
+				return api.Continue
+			}
+
+			// TODO: Make these errors with 5XX more user-friendly
+			f.logger.Error("technical error in oauth callback", "error", err.Error())
+			f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+				http.StatusInternalServerError,
+				"Technical error. Please try again.",
+				map[string][]string{}, -1, "")
+		}
+
+		return api.Continue
+	}
+
+	// 7. Validate the token
+	err = f.checkRequestAuthentication(requestHeaders)
 	if err != nil {
+		if f.shouldShowErrorPage(err) {
+			f.handleErrorRedirect()
+			return api.Continue
+		}
+
 		f.logger.Error("failed checking request authentication", "error", err.Error())
 	}
 
@@ -204,7 +242,7 @@ func (f *HttpFilter) DecodeHeaders(reqHeaderMap api.RequestHeaderMap, endStream 
 		return api.Continue
 	}
 
-	// 6. Redirect to OAuth if not authenticated
+	// 8. Redirect to OAuth if not authenticated
 	f.handleOauthProviderRedirection(requestURL)
 	return api.Continue
 }
@@ -274,9 +312,9 @@ func (f *HttpFilter) EncodeTrailers(trailers api.ResponseTrailerMap) api.StatusT
 // NOT IMPLEMENTED
 ////////////////////////////
 
-func (f *HttpFilter) OnLog(reqHeaders api.RequestHeaderMap, reqTrailers api.RequestTrailerMap,
-	respHeaders api.ResponseHeaderMap, respTrailers api.ResponseTrailerMap) {
-	f.logHeaders(reqHeaders, respHeaders)
+func (f *HttpFilter) OnLog(requestHeaders api.RequestHeaderMap, requestTrailers api.RequestTrailerMap,
+	responseHeaders api.ResponseHeaderMap, responseTrailers api.ResponseTrailerMap) {
+	f.logHeaders(requestHeaders, responseHeaders)
 }
 
 func (f *HttpFilter) OnDestroy(reason api.DestroyReason) {}
