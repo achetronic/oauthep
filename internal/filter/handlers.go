@@ -22,10 +22,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
+
 	//
 	"oauthep/internal/config"
 	"oauthep/internal/utils"
@@ -58,7 +58,7 @@ func (f *HttpFilter) handleErrorRedirect() {
 	// Build and set context cookie
 	err := f.setFlowContextInCookies(responseHeaders, f.flowContext)
 	if err != nil {
-		log.Print("ERRORS: ", err)
+		f.logger.Debug("failed setting flow context cookie to the user")
 	}
 
 	f.callbacks.DecoderFilterCallbacks().SendLocalReply(302,

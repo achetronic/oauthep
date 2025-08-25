@@ -83,6 +83,7 @@ static_resources:
                           callback_path: "/oauth/callback"
                           logout_path: "/oauth/logout"
                           logout_redirect_after_uri: "https://keycloak.example.com/realms/master/protocol/openid-connect/logout"
+                          error_path: "/oauth/error"
 
                           # Supported providers: google, openid (default)
                           provider: openid

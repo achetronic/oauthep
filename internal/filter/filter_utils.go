@@ -26,28 +26,25 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"oauthep/internal/config"
-	"oauthep/internal/flowcontext"
-	"oauthep/internal/validator"
 	"os"
 	"reflect"
 	"regexp"
 	"slices"
 	"strings"
+
 	//
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"github.com/golang-jwt/jwt/v5"
+	"oauthep/internal/config"
+	"oauthep/internal/flowcontext"
 	"oauthep/internal/utils"
+	"oauthep/internal/validator"
 )
 
 var (
 	CompiledConfigExpansionEnvExpression = regexp.MustCompile(`\$\{env:([^}]+)\}`)
 	CompiledConfigExpansionSdsExpression = regexp.MustCompile(`\$\{sds:([^}]+)\}`)
 )
-
-///////////////////////////////////////////////////
-// EXPERIMENT PRIOR
-///////////////////////////////////////////////////
 
 func (f *HttpFilter) expandConfigurationStringField(value string) string {
 
@@ -304,7 +301,7 @@ func (f *HttpFilter) getFlowContextFromCookies(requestHeaders api.RequestHeaderM
 
 // setCookies set cookies with the content of cookieData map. It maps cookie's name -> content
 // This function only processes cookies pre-registered in utils.CookiesToHandle
-func (f *HttpFilter) setCookies(responseHeaders map[string][]string, cookieData map[string]string) error {
+func (f *HttpFilter) setCookies(responseHeaders map[string][]string, cookieData map[string]string, cookieContentOverrides ...utils.CookieContent) error {
 
 	cookieContent := utils.CookieContent{
 		Prefix:   f.config.SessionCookiePrefix,
@@ -316,18 +313,38 @@ func (f *HttpFilter) setCookies(responseHeaders map[string][]string, cookieData 
 		Duration: f.config.SessionCookieDuration,
 	}
 
-	// Iterar solo por cookies registradas (como hace getCookies)
+	// Apply overrides to passed fields
+	for _, cookieContentOverride := range cookieContentOverrides {
+		overrideValue := reflect.ValueOf(cookieContentOverride)
+		cookieContentValue := reflect.ValueOf(&cookieContent).Elem()
+		overrideType := reflect.TypeOf(cookieContentOverride)
+
+		for i := 0; i < overrideValue.NumField(); i++ {
+			field := overrideValue.Field(i)
+			fieldName := overrideType.Field(i).Name
+
+			// Just override fields that has actually a value
+			if !field.IsZero() {
+				cookieContentField := cookieContentValue.FieldByName(fieldName)
+				if cookieContentField.CanSet() {
+					cookieContentField.Set(field)
+				}
+			}
+		}
+	}
+
+	// Iterate only over registered cookies
 	for _, cookieName := range utils.CookiesToHandle {
 
 		cookiePayload := cookieData[cookieName]
 		if cookiePayload == "" {
-			continue // Skip cookies vacías
+			continue
 		}
 
 		cookieContent.Name = cookieName
 		cookieContent.Payload = cookiePayload
 
-		// Comprimir solo si es JWT
+		// Compress only JWTs
 		if f.config.SessionCookieCompressionEnabled && validator.IsParsableAsJWT(cookiePayload) {
 			compressedPayload, err := utils.CompressJWT(cookiePayload)
 			if err != nil {
@@ -343,7 +360,6 @@ func (f *HttpFilter) setCookies(responseHeaders map[string][]string, cookieData 
 	return nil
 }
 
-// FIXME: This function is here for backward compatibility
 // setAuthCookies set auth cookies in passed response headers.
 // Values for auth cookies are passed as an OauthTokenEndpointResponse object
 func (f *HttpFilter) setAuthCookies(responseHeaders map[string][]string, tokens *OauthTokenEndpointResponse) error {
@@ -374,7 +390,7 @@ func (f *HttpFilter) setFlowContextInCookies(responseHeaders map[string][]string
 		utils.CookieNameContext: encodedContext,
 	}
 
-	return f.setCookies(responseHeaders, cookieData)
+	return f.setCookies(responseHeaders, cookieData, utils.CookieContent{Duration: "10m"})
 }
 
 // refreshAccessToken perform a request to refresh the tokens and return the response as bytes
