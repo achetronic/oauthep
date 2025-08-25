@@ -12,119 +12,134 @@ var (
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Authentication Error</title>
+    <title>Authentication Error - Oauthep</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #f8f6f1;
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: #333;
+            color: #1f2937;
         }
         
         .container {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 16px;
-            padding: 2.5rem;
+            background: #ffffff;
+            border-radius: 20px;
+            padding: 3rem 2.5rem;
             max-width: 480px;
             width: 90%;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 10px 25px rgba(0, 0, 0, 0.08);
             text-align: center;
+            border: 1px solid #f3f4f6;
         }
         
         .icon {
-            width: 64px;
-            height: 64px;
+            width: 48px;
+            height: 48px;
             margin: 0 auto 1.5rem;
-            background: #ff6b6b;
+            background: #ff7875;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 28px;
+            font-size: 20px;
             color: white;
+            box-shadow: 0 2px 6px rgba(255, 120, 117, 0.2);
         }
         
         h1 {
-            font-size: 1.5rem;
+            font-size: 1.375rem;
             font-weight: 600;
-            margin-bottom: 0.5rem;
-            color: #2d3748;
+            margin-bottom: 0.75rem;
+            color: #111827;
         }
         
         .error-message {
-            color: #718096;
+            color: #6b7280;
             margin-bottom: 1.5rem;
-            line-height: 1.6;
+            font-size: 0.95rem;
         }
         
         .error-code {
-            background: #f7fafc;
-            border: 1px solid #e2e8f0;
+            background: #f9fafb;
+            border: 1px solid #f3f4f6;
             border-radius: 8px;
-            padding: 0.75rem;
-            margin: 1rem 0;
-            font-family: 'SF Mono', Monaco, monospace;
-            font-size: 0.875rem;
-            color: #4a5568;
+            padding: 1rem;
+            margin: 1.5rem 0;
+            font-family: monospace;
+            font-size: 0.8rem;
+            color: #6b7280;
+            font-weight: 500;
         }
         
         .actions {
             display: flex;
-            gap: 1rem;
+            gap: 0.75rem;
             margin-top: 2rem;
         }
         
         .btn {
             flex: 1;
-            padding: 0.875rem 1.5rem;
+            padding: 0.875rem 1.25rem;
             border: none;
             border-radius: 8px;
             font-weight: 500;
             cursor: pointer;
             text-decoration: none;
-            display: inline-block;
-            transition: all 0.2s ease;
-            font-size: 0.95rem;
+            font-size: 0.875rem;
+            transition: all 0.15s ease;
         }
         
         .btn-primary {
-            background: #4299e1;
+            background: #6366f1;
             color: white;
         }
         
         .btn-primary:hover {
-            background: #3182ce;
+            background: #5b5bd6;
             transform: translateY(-1px);
         }
         
         .btn-secondary {
-            background: #edf2f7;
-            color: #4a5568;
+            background: #f2f1ee;
+            color: #6b7280;
+            border: 1px solid #e6e3dc;
         }
         
         .btn-secondary:hover {
-            background: #e2e8f0;
+            background: #edeae5;
         }
         
         .details {
-            margin-top: 1.5rem;
+            margin-top: 2rem;
             padding-top: 1.5rem;
-            border-top: 1px solid #e2e8f0;
-            font-size: 0.875rem;
-            color: #718096;
+            border-top: 1px solid #f3f4f6;
+            font-size: 0.8rem;
+            color: #9ca3af;
+        }
+        
+        .brand {
+            margin-top: 1.5rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: #6b7280;
+            letter-spacing: 0.1em;
+        }
+        
+        @media (max-width: 480px) {
+            .container { padding: 2rem 1.5rem; margin: 1rem; }
+            .actions { flex-direction: column; gap: 0.5rem; }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="icon">⚠</div>
-        <h1>Authentication Required</h1>
+        <h1>Authentication Failed</h1>
         <p class="error-message">{{.Message}}</p>
         
         <div class="error-code">
@@ -139,6 +154,8 @@ var (
         <div class="details">
             If this problem persists, please contact your administrator.
         </div>
+        
+        <div class="brand">Oauthep</div>
     </div>
 </body>
 </html>
