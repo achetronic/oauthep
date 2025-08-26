@@ -65,8 +65,6 @@ type HttpFilter struct {
 
 func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.StreamFilter {
 
-	log.Print("NewStreamFilter function executed")
-
 	streamFilter := &HttpFilter{}
 
 	//
