@@ -198,6 +198,8 @@ func (f *HttpFilter) shouldSkipAuthFromIp(xffHeaderValue []string) (bool, error)
 		clientRealIp = xffClientIp
 	}
 
+	f.logger.Debug("calculated real client address", "trusted_proxies_mode", f.config.TrustedProxiesMode, "address", clientRealIp)
+
 	return utils.IsTrustedIp(f.skipAuthCidrs, clientRealIp), nil
 }
 

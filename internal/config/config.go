@@ -60,7 +60,7 @@ type Configuration struct {
 
 	//
 	TrustedProxiesMode string   `json:"trusted_proxies_mode,omitempty"`
-	TrustedProxies     []string `json:"trusted_proxies_cidr,omitempty"`
+	TrustedProxies     []string `json:"trusted_proxies,omitempty"`
 
 	// Authentication exclusions
 	SkipAuthCidr  []string `json:"skip_auth_cidr,omitempty"`
