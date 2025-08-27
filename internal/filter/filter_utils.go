@@ -213,10 +213,7 @@ func (f *HttpFilter) shouldShowErrorPage(err error) bool {
 	var tokenErr TokenInvalidError
 	var claimsErr ClaimsFailedError
 
-	if f.flowContext.HasSameErrorLoop() {
-		f.flowContext.WithErrorCode(ErrorCodeRepeatedErrorLoop)
-		return true
-	} else if f.flowContext.HasTooManyErrors(flowcontext.MaxAttempts, flowcontext.AttemptWindow) {
+	if f.flowContext.HasTooManyErrors() {
 		f.flowContext.WithErrorCode(ErrorCodeDifferentErrorLoop)
 		return true
 	} else if errors.As(err, &stateErr) {
@@ -280,22 +277,20 @@ func (f *HttpFilter) getFlowContextFromCookies(requestHeaders api.RequestHeaderM
 	// Look for context cookie
 	encodedContext, exists := cookieMap[utils.CookieNameContext]
 	if !exists || encodedContext == "" {
-		// Return empty context if no cookie found
-		return &flowcontext.FlowContext{}, nil
+		// No cookie found
+		return nil, nil
 	}
 
 	// Decrypt and decode
 	decryptedBytes, err := utils.DecryptData(encodedContext, f.config.OauthClientSecret)
 	if err != nil {
-		f.logger.Warn("failed to decrypt auth context, returning empty", "error", err.Error())
-		return &flowcontext.FlowContext{}, nil
+		return nil, fmt.Errorf("failed to decrypt auth context: %w", err)
 	}
 
 	var context flowcontext.FlowContext
 	err = json.Unmarshal(decryptedBytes, &context)
 	if err != nil {
-		f.logger.Warn("failed to unmarshal auth context, returning empty", "error", err.Error())
-		return &flowcontext.FlowContext{}, nil
+		return nil, fmt.Errorf("failed to unmarshal auth context: %w", err)
 	}
 
 	return &context, nil

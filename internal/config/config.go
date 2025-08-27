@@ -96,7 +96,12 @@ type Configuration struct {
 	SessionCookieSameSite string `json:"session_cookie_samesite,omitempty"`
 	SessionCookieDuration string `json:"session_cookie_duration,omitempty"`
 
-	SessionCookieCompressionEnabled bool `json:"session_cookie_compression_enabled,omitempty"`
+	SessionCookieCompressionEnabled     bool `json:"session_cookie_compression_enabled,omitempty"`
+	SessionCookieContextMaxStoredErrors int  `json:"session_cookie_context_max_stored_errors,omitempty"`
+
+	//
+	AllowedFailedAttempts              int `json:"allowed_failed_attempts,omitempty"`
+	AllowedFailedAttemptsWindowMinutes int `json:"allowed_failed_attempts_window_minutes,omitempty"`
 }
 
 func NewConfigWithDefaults() *Configuration {
@@ -138,7 +143,12 @@ func NewConfigWithDefaults() *Configuration {
 		SessionCookieSameSite: "Lax",
 		SessionCookieDuration: "2d",
 
-		SessionCookieCompressionEnabled: true,
+		SessionCookieCompressionEnabled:     true,
+		SessionCookieContextMaxStoredErrors: 30,
+
+		//
+		AllowedFailedAttempts:              20,
+		AllowedFailedAttemptsWindowMinutes: 1,
 	}
 }
 

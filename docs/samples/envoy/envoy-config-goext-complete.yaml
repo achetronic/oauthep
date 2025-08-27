@@ -132,6 +132,11 @@ static_resources:
                           session_cookie_duration: "2d"
 
                           session_cookie_compression_enabled: true
+                          session_cookie_context_max_stored_errors: 35 # Be careful, cookies can store 4KB only
+
+                          # Error rate limit
+                          allowed_failed_attempts: 30
+                          allowed_failed_attempts_window_minutes: 1
 
                       generic_secrets:
                         - name: example_name

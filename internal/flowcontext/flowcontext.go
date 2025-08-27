@@ -4,21 +4,29 @@ import (
 	"time"
 )
 
-const (
-	MaxAttempts   = 3
-	AttemptWindow = 5 * 60 // 5 minutes in seconds
-)
+type FlowContextOptions struct {
+	PluginCall string
+
+	//
+	MaxStoredErrors      int
+	MaxFailedAttempts    int
+	AttemptWindowMinutes int
+}
 
 // FlowContext structure for cookie storage
 type FlowContext struct {
+	options FlowContextOptions
+
+	//
 	Attempts     int          `json:"attempts"`
 	FirstAttempt int64        `json:"first_attempt"` // timestamp
 	Errors       []ErrorEntry `json:"errors"`        // Max 5, sorted from old -> new
 }
 
 type ErrorEntry struct {
-	Code      int   `json:"code"`      // 1, 2, 3, etc
-	Timestamp int64 `json:"timestamp"` // Unix timestamp
+	PluginCall string `json:"plugin_call"`
+	Code       int    `json:"code"`      // 1, 2, 3, etc
+	Timestamp  int64  `json:"timestamp"` // Unix timestamp
 }
 
 // AddAttempt TODO
@@ -28,6 +36,11 @@ func (ctx *FlowContext) addAttempt() *FlowContext {
 		ctx.FirstAttempt = time.Now().Unix()
 	}
 
+	return ctx
+}
+
+func (ctx *FlowContext) WithOptions(opts *FlowContextOptions) *FlowContext {
+	ctx.options = *opts
 	return ctx
 }
 
@@ -47,59 +60,49 @@ func (ctx *FlowContext) WithErrorCode(code int) *FlowContext {
 
 	// Add new error in the end (more recent)
 	newError := ErrorEntry{
-		Code:      code,
-		Timestamp: time.Now().Unix(),
+		PluginCall: ctx.options.PluginCall,
+		Code:       code,
+		Timestamp:  time.Now().Unix(),
 	}
 	ctx.Errors = append(ctx.Errors, newError)
 
-	// Keep just 5
-	if len(ctx.Errors) > 5 {
+	// Keep just some of them
+	if len(ctx.Errors) > ctx.options.MaxStoredErrors {
 		ctx.Errors = ctx.Errors[1:] // Delete the oldest
 	}
 
 	return ctx
 }
 
-// HasSameErrorLoop detects if there's a loop pattern in recent errors
-func (ctx *FlowContext) HasSameErrorLoop() bool {
-	if len(ctx.Errors) < 2 {
-		return false
-	}
-
-	// Check if last 2 errors are the same type
-	lastError := ctx.Errors[len(ctx.Errors)-1]
-	prevError := ctx.Errors[len(ctx.Errors)-2]
-
-	if lastError.Code == prevError.Code {
-		return true
-	}
-
-	// Optional: Check if all 3 are the same (more strict)
-	if len(ctx.Errors) == 3 {
-		firstError := ctx.Errors[0]
-		if firstError.Code == lastError.Code && firstError.Code == prevError.Code {
-			return true
+// WithUniqueErrorCode sets error code and automatically increments attempts
+// but only if the last error code is different from the one being added
+func (ctx *FlowContext) WithUniqueErrorCode(code int) *FlowContext {
+	if len(ctx.Errors) > 0 {
+		lastError := ctx.Errors[len(ctx.Errors)-1]
+		if lastError.Code == code {
+			return ctx
 		}
 	}
 
-	return false
+	// Different code or first error
+	return ctx.WithErrorCode(code)
 }
 
 // HasTooManyErrors detects if there are too many errors in the time window
-func (ctx *FlowContext) HasTooManyErrors(maxErrors int, windowSeconds int64) bool {
-	if len(ctx.Errors) < maxErrors {
+func (ctx *FlowContext) HasTooManyErrors() bool {
+
+	if len(ctx.Errors) < ctx.options.MaxFailedAttempts {
 		return false
 	}
-
 	now := time.Now().Unix()
 
 	// Check if we have maxErrors within the time window
 	errorsInWindow := 0
 	for _, errorEntry := range ctx.Errors {
-		if now-errorEntry.Timestamp <= windowSeconds {
+		if now-errorEntry.Timestamp <= int64(ctx.options.AttemptWindowMinutes*60) {
 			errorsInWindow++
 		}
 	}
 
-	return errorsInWindow >= maxErrors
+	return errorsInWindow >= ctx.options.MaxFailedAttempts
 }

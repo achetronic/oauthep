@@ -58,6 +58,7 @@ type HttpFilter struct {
 	skipAuthCidrs                    []*net.IPNet
 	compiledExcludedPathsExpressions []*regexp.Regexp
 	celPrograms                      []*cel.Program
+	pluginCall                       uuid.UUID
 
 	// Auth flow per-request stuff
 	flowContext *flowcontext.FlowContext
@@ -66,6 +67,7 @@ type HttpFilter struct {
 func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.StreamFilter {
 
 	streamFilter := &HttpFilter{}
+	streamFilter.pluginCall = uuid.New()
 
 	//
 	config, ok := c.(*cfg.Configuration)
@@ -86,7 +88,7 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 	default:
 		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
 	}
-	logger := slog.New(handler).With("plugin-call", uuid.New())
+	logger := slog.New(handler).With("plugin-call", streamFilter.pluginCall.String())
 
 	// Parse all CIDRs from config
 	trustedProxiesCidrs, err := utils.GetParsedCidrs(config.TrustedProxies)
@@ -161,9 +163,26 @@ func NewStreamFilter(c interface{}, callbacks api.FilterCallbackHandler) api.Str
 ////////////////////////////
 
 func (f *HttpFilter) DecodeHeaders(requestHeaders api.RequestHeaderMap, endStream bool) api.StatusType {
+	var err error
+
 	allHeaders := requestHeaders.GetAllHeaders()
 
-	// 1. Check excluded CIDRs
+	// 1. Recover auth context
+	f.flowContext, err = f.getFlowContextFromCookies(requestHeaders)
+	if f.flowContext == nil {
+		if err != nil {
+			f.logger.Warn("failed to get auth context, creating new", "error", err.Error())
+		}
+		f.flowContext = &flowcontext.FlowContext{}
+	}
+	f.flowContext = f.flowContext.WithOptions(&flowcontext.FlowContextOptions{
+		PluginCall:           f.pluginCall.String(),
+		MaxStoredErrors:      f.config.SessionCookieContextMaxStoredErrors,
+		MaxFailedAttempts:    f.config.AllowedFailedAttempts,
+		AttemptWindowMinutes: f.config.AllowedFailedAttemptsWindowMinutes,
+	})
+
+	// 2. Check excluded CIDRs
 	headerXForwardedFor, _ := allHeaders["x-forwarded-for"]
 	shouldSkipIp, err := f.shouldSkipAuthFromIp(headerXForwardedFor)
 	if err != nil {
@@ -171,6 +190,8 @@ func (f *HttpFilter) DecodeHeaders(requestHeaders api.RequestHeaderMap, endStrea
 			"error", err.Error(),
 			"xff_header", headerXForwardedFor,
 			"trusted_proxies_mode", f.config.TrustedProxiesMode)
+
+		// TODO: Send the user to error page for these errors
 	}
 
 	if shouldSkipIp {
@@ -179,17 +200,10 @@ func (f *HttpFilter) DecodeHeaders(requestHeaders api.RequestHeaderMap, endStrea
 		return api.Continue
 	}
 
-	// 2. Check excluded paths
+	// 3. Check excluded paths
 	requestURL := utils.GetRequestURL(allHeaders)
 	if f.shouldSkipFromPath(requestURL.Path) {
 		return api.Continue
-	}
-
-	// 3. Recover auth context
-	f.flowContext, err = f.getFlowContextFromCookies(requestHeaders)
-	if err != nil {
-		f.logger.Warn("failed to get auth context, creating new", "error", err.Error())
-		f.flowContext = &flowcontext.FlowContext{}
 	}
 
 	// 4. Handle logout
