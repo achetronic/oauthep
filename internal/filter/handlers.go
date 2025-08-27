@@ -204,6 +204,7 @@ func (f *HttpFilter) handleOauthProviderRedirection(currentUrl url.URL) {
 	// Force Google to provide refresh_token
 	if f.config.Provider == config.ProviderGoogle {
 		data.Set("access_type", "offline")
+		data.Set("prompt", "consent")
 	}
 	authURL := fmt.Sprintf("%s?%s", f.config.OauthAuthUri, data.Encode())
 
