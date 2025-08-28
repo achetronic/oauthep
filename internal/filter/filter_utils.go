@@ -216,7 +216,6 @@ func (f *HttpFilter) shouldShowErrorPage(err error) bool {
 
 	//Authentication check related
 	var jwksErr JwksRetrievalError
-	var reqMalformedErr RequestMalformedError
 	var celEvalErr CELEvaluationError
 	var tokenErr TokenInvalidError
 	var claimsErr ClaimsFailedError
@@ -247,10 +246,6 @@ func (f *HttpFilter) shouldShowErrorPage(err error) bool {
 
 	} else if errors.As(err, &jwksErr) {
 		f.flowContext.WithErrorCode(ErrorCodePublicKeysRetrieval)
-		return true
-
-	} else if errors.As(err, &reqMalformedErr) {
-		f.flowContext.WithErrorCode(ErrorCodeRequestMalformed)
 		return true
 
 	} else if errors.As(err, &celEvalErr) {

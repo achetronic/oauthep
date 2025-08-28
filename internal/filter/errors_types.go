@@ -95,22 +95,20 @@ func (e CookieSetError) Error() string {
 // Authentication check errors
 ////////////////////////////////////////////
 
-// TokenInvalidError TODO
-type TokenInvalidError struct {
+type JwksRetrievalError struct {
 	Reason string
 }
 
-func (e TokenInvalidError) Error() string {
-	return fmt.Sprintf("token invalid: %s", e.Reason)
+func (e JwksRetrievalError) Error() string {
+	return fmt.Sprintf("configuration error: %s", e.Reason)
 }
 
-// ClaimsFailedError TODO
-type ClaimsFailedError struct {
+type CookieGetError struct {
 	Reason string
 }
 
-func (e ClaimsFailedError) Error() string {
-	return fmt.Sprintf("claims validation failed: %s", e.Reason)
+func (e CookieGetError) Error() string {
+	return fmt.Sprintf("cookie get error: %s", e.Reason)
 }
 
 // MissingCredentialsError TODO
@@ -122,20 +120,13 @@ func (e MissingCredentialsError) Error() string {
 	return fmt.Sprintf("missing credentials: %s", e.Reason)
 }
 
-type JwksRetrievalError struct {
+// TokenInvalidError TODO
+type TokenInvalidError struct {
 	Reason string
 }
 
-func (e JwksRetrievalError) Error() string {
-	return fmt.Sprintf("configuration error: %s", e.Reason)
-}
-
-type RequestMalformedError struct {
-	Reason string
-}
-
-func (e RequestMalformedError) Error() string {
-	return fmt.Sprintf("request malformed: %s", e.Reason)
+func (e TokenInvalidError) Error() string {
+	return fmt.Sprintf("token invalid: %s", e.Reason)
 }
 
 type CELEvaluationError struct {
@@ -152,4 +143,13 @@ type TokenRefreshError struct {
 
 func (e TokenRefreshError) Error() string {
 	return fmt.Sprintf("token refresh error: %s", e.Reason)
+}
+
+// ClaimsFailedError TODO
+type ClaimsFailedError struct {
+	Reason string
+}
+
+func (e ClaimsFailedError) Error() string {
+	return fmt.Sprintf("claims validation failed: %s", e.Reason)
 }

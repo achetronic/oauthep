@@ -208,7 +208,7 @@ func (f *HttpFilter) handleRequestAuthenticationCheck(requestHeaders api.Request
 	// Extract cookies
 	cookieNameToContentMap, err := f.getCookies(requestHeaders)
 	if err != nil {
-		return RequestMalformedError{Reason: fmt.Sprintf("failed getting cookies: %s", err.Error())}
+		return CookieGetError{Reason: fmt.Sprintf("failed getting cookies: %s", err.Error())}
 	}
 
 	// Time to validate the token, bruh.
