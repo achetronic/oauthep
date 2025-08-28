@@ -228,26 +228,23 @@ func (f *HttpFilter) DecodeHeaders(requestHeaders api.RequestHeaderMap, endStrea
 				return api.Continue
 			}
 
-			// TODO: Make these errors with 5XX more user-friendly
-			f.logger.Error("technical error in oauth callback", "error", err.Error())
+			f.logger.Error("unexpected error in oauth callback", "error", err.Error())
 			f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-				http.StatusInternalServerError,
-				"Technical error. Please try again.",
-				map[string][]string{}, -1, "")
+				http.StatusInternalServerError, "Unexpected error. More info in logs.", map[string][]string{}, -1, "")
 		}
 
 		return api.Continue
 	}
 
 	// 7. Validate the token
-	err = f.checkRequestAuthentication(requestHeaders)
+	err = f.handleRequestAuthenticationCheck(requestHeaders)
 	if err != nil {
+		f.logger.Error("failed checking request authentication", "error", err.Error())
+
 		if f.shouldShowErrorPage(err) {
 			f.handleErrorRedirect()
 			return api.Continue
 		}
-
-		f.logger.Error("failed checking request authentication", "error", err.Error())
 	}
 
 	if err == nil {

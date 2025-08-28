@@ -34,8 +34,6 @@ import (
 
 	//
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
-	"github.com/golang-jwt/jwt/v5"
-	"oauthep/internal/config"
 	"oauthep/internal/flowcontext"
 	"oauthep/internal/utils"
 	"oauthep/internal/validator"
@@ -209,16 +207,56 @@ func (f *HttpFilter) shouldShowErrorPage(err error) bool {
 		return false
 	}
 
+	// Callback related
+	var callbackMalformedErr CallbackMalformedError
 	var stateErr StateInvalidError
+	var providerCommErr ProviderCommunicationError
+	var providerRespErr ProviderResponseError
+	var cookieSetErr CookieSetError
+
+	//Authentication check related
+	var jwksErr JwksRetrievalError
+	var reqMalformedErr RequestMalformedError
+	var celEvalErr CELEvaluationError
 	var tokenErr TokenInvalidError
 	var claimsErr ClaimsFailedError
 
 	if f.flowContext.HasTooManyErrors() {
 		f.flowContext.WithErrorCode(ErrorCodeDifferentErrorLoop)
 		return true
+
+	} else if errors.As(err, &callbackMalformedErr) {
+		f.flowContext.WithErrorCode(ErrorCodeCallbackMalformed)
+		return true
+
 	} else if errors.As(err, &stateErr) {
 		f.flowContext.WithErrorCode(ErrorCodeStateInvalid)
 		return true
+
+	} else if errors.As(err, &providerCommErr) {
+		f.flowContext.WithErrorCode(ErrorCodeProviderCommunication)
+		return true
+
+	} else if errors.As(err, &providerRespErr) {
+		f.flowContext.WithErrorCode(ErrorCodeProviderResponse)
+		return true
+
+	} else if errors.As(err, &cookieSetErr) {
+		f.flowContext.WithErrorCode(ErrorCodeCookieSet)
+		return true
+
+	} else if errors.As(err, &jwksErr) {
+		f.flowContext.WithErrorCode(ErrorCodePublicKeysRetrieval)
+		return true
+
+	} else if errors.As(err, &reqMalformedErr) {
+		f.flowContext.WithErrorCode(ErrorCodeRequestMalformed)
+		return true
+
+	} else if errors.As(err, &celEvalErr) {
+		f.flowContext.WithErrorCode(ErrorCodeCELEvaluation)
+		return true
+
 	} else if errors.As(err, &tokenErr) {
 		f.flowContext.WithErrorCode(ErrorCodeTokenInvalid)
 		return true
@@ -423,104 +461,4 @@ func (f *HttpFilter) refreshAccessToken(refreshToken string) ([]byte, error) {
 	}
 
 	return responseBodyBytes, err
-}
-
-// checkRequestAuthentication retrieve the tokens from the cookies and validate them.
-// When they are expired, try to refresh and store them in Envoy's metadata.
-func (f *HttpFilter) checkRequestAuthentication(requestHeaders api.RequestHeaderMap) error {
-
-	////////////////////////////
-	// Validation phase
-	////////////////////////////
-
-	// Get JWKS in lazy mode
-	jwksCerts, _, err := f.getJwks()
-	if err != nil {
-		return fmt.Errorf("failed getting JWKS: %s", err.Error())
-	}
-
-	// Extract cookies
-	cookieNameToContentMap, err := f.getCookies(requestHeaders)
-	if err != nil {
-		return fmt.Errorf("failed getting tokens from cookies: %s", err.Error())
-	}
-
-	// Time to validate the token, bruh.
-	// The process depends on the provider as not all of them are super standard
-	var parsedToken *jwt.Token
-	var validationError error
-	switch f.config.Provider {
-	case config.ProviderGoogle:
-		// Token types: https://cloud.google.com/docs/authentication/token-types
-		// Authentication docs: https://cloud.google.com/iap/docs/authentication-howto
-		parsedToken, validationError = validator.ValidateJsonWebToken(jwksCerts, cookieNameToContentMap[utils.CookieNameIdToken])
-	default:
-		parsedToken, validationError = validator.ValidateJsonWebToken(jwksCerts, cookieNameToContentMap[utils.CookieNameAccessToken])
-	}
-
-	// Critical validation issue: Token structurally invalid
-	// These cannot be fixed with refresh
-	if parsedToken == nil {
-		if validationError != nil {
-			return TokenInvalidError{Reason: fmt.Sprintf("token structurally invalid: %s", validationError.Error())}
-		}
-		return TokenInvalidError{Reason: "token structurally invalid: unknown error"}
-	}
-
-	////////////////////////////
-	// Claims check phase
-	////////////////////////////
-
-	// Token is structurally valid - evaluate CEL regardless of expiration
-	for _, celProgram := range f.celPrograms {
-		out, _, err := (*celProgram).Eval(map[string]interface{}{
-			"payload": parsedToken.Claims,
-		})
-
-		if err != nil {
-			return fmt.Errorf("cel program evaluation error: %s", err.Error())
-		}
-
-		if out.Value() != true {
-			return ClaimsFailedError{Reason: "claim does not meet cel conditions"}
-		}
-	}
-
-	////////////////////////////
-	// Decision phase
-	////////////////////////////
-
-	// Token is valid and passes CEL
-	if validationError == nil {
-		return nil
-	}
-
-	// Token passes CEL but has non-expiration validation issues.
-	// We can not fix it by refreshing
-	if !errors.As(validationError, &jwt.ErrTokenExpired) {
-		return fmt.Errorf("token validation failed: %s", validationError.Error())
-	}
-
-	////////////////////////////
-	// Refresh flow phase
-	////////////////////////////
-
-	f.logger.Debug("expired token detected. refresh in process")
-
-	// No refresh_token found
-	if cookieNameToContentMap[utils.CookieNameRefreshToken] == "" {
-		return fmt.Errorf("refresh token not found")
-	}
-
-	// Try to refresh tokens
-	newTokensBytes, refreshError := f.refreshAccessToken(cookieNameToContentMap[utils.CookieNameRefreshToken])
-	if refreshError != nil {
-		return fmt.Errorf("failed refreshing tokens: %s", refreshError.Error())
-	}
-
-	// New tokens achieved, store them and allow entrance
-	f.logger.Debug("tokens have been refreshed")
-	f.callbacks.StreamInfo().DynamicMetadata().Set("oauthep", "new_tokens", string(newTokensBytes))
-
-	return nil
 }

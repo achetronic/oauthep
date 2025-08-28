@@ -20,10 +20,14 @@ package filter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/golang-jwt/jwt/v5"
 	"io"
 	"net/http"
 	"net/url"
+	"oauthep/internal/validator"
 	"strings"
 
 	//
@@ -102,7 +106,7 @@ func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) (err er
 	state := currentUrl.Query().Get("state")
 
 	if strings.EqualFold(code, "") || strings.EqualFold(state, "") {
-		return fmt.Errorf(`code or state not found in URI`)
+		return CallbackMalformedError{Reason: "code or state not found in callback URL"}
 	}
 
 	//
@@ -121,7 +125,7 @@ func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) (err er
 
 	for reqFieldName, reqFieldValue := range tokenRequiredFields {
 		if strings.EqualFold(reqFieldValue, "") {
-			return fmt.Errorf(`required field empty in code <-> token exchange flow: %s`, reqFieldName)
+			return CallbackMalformedError{Reason: fmt.Sprintf("required field empty in code <-> token exchange flow: %s", reqFieldName)}
 		}
 	}
 
@@ -141,7 +145,8 @@ func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) (err er
 
 	req, err := http.NewRequest(http.MethodPost, f.config.OauthTokenUri, bodyReader)
 	if err != nil {
-		return fmt.Errorf(`could not create request to token endpoint: %s`, err.Error())
+		return ProviderCommunicationError{Reason: fmt.Sprintf("could not create request to token endpoint: %s", err.Error())}
+
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -149,23 +154,24 @@ func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) (err er
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf(`error calling token endpoint: %s`, err.Error())
+		return ProviderCommunicationError{Reason: fmt.Sprintf("error calling token endpoint: %s", err.Error())}
 	}
 
 	//
 	if res.StatusCode > 299 {
-		return fmt.Errorf(`token endpoint responded with failure. code: %d - status: %s`, res.StatusCode, res.Status)
+		return ProviderResponseError{
+			Reason: fmt.Sprintf("token endpoint responded with failure. code: %d - status: %s", res.StatusCode, res.Status)}
 	}
 
 	resBody, err := io.ReadAll(res.Body)
 	if err != nil {
-		return fmt.Errorf(`could not read response body from token endpoint: %s`, err.Error())
+		return ProviderCommunicationError{Reason: fmt.Sprintf("could not read response body from token endpoint: %s", err.Error())}
 	}
 
 	responseObj := &OauthTokenEndpointResponse{}
 	err = json.Unmarshal(resBody, responseObj)
 	if err != nil {
-		return fmt.Errorf(`failed decoding the response from token endpoint: %s`, err.Error())
+		return ProviderResponseError{Reason: fmt.Sprintf("failed decoding the response from token endpoint: %s", err.Error())}
 	}
 
 	//
@@ -177,11 +183,128 @@ func (f *HttpFilter) handleOauthProviderAuthCallback(currentUrl url.URL) (err er
 	// Set the cookies in the user browser
 	err = f.setAuthCookies(responseHeaders, responseObj)
 	if err != nil {
-		return fmt.Errorf("failed setting cookies: %s", err.Error())
+		return CookieSetError{Reason: fmt.Sprintf("failed setting cookies: %s", err.Error())}
 	}
 
 	f.callbacks.DecoderFilterCallbacks().SendLocalReply(302, "Redirecting to the original site",
 		responseHeaders, -1, "")
+	return nil
+}
+
+// handleRequestAuthenticationCheck retrieve the tokens from the cookies and validate them.
+// When they are expired, try to refresh and store them in Envoy's metadata.
+func (f *HttpFilter) handleRequestAuthenticationCheck(requestHeaders api.RequestHeaderMap) error {
+
+	////////////////////////////
+	// Validation phase
+	////////////////////////////
+
+	// Get JWKS in lazy mode
+	jwksCerts, _, err := f.getJwks()
+	if err != nil {
+		return JwksRetrievalError{Reason: fmt.Sprintf("failed getting JWKS: %s", err.Error())}
+	}
+
+	// Extract cookies
+	cookieNameToContentMap, err := f.getCookies(requestHeaders)
+	if err != nil {
+		return RequestMalformedError{Reason: fmt.Sprintf("failed getting cookies: %s", err.Error())}
+	}
+
+	// Time to validate the token, bruh.
+	// The process depends on the provider as not all of them are super standard
+	var parsedToken *jwt.Token
+	var validationError error
+	switch f.config.Provider {
+	case config.ProviderGoogle:
+		cookieContent, cookieFound := cookieNameToContentMap[utils.CookieNameIdToken]
+		if !cookieFound {
+			return MissingCredentialsError{
+				Reason: "id_token cookie not found",
+			}
+		}
+
+		// Token types: https://cloud.google.com/docs/authentication/token-types
+		// Authentication docs: https://cloud.google.com/iap/docs/authentication-howto
+		parsedToken, validationError = validator.ValidateJsonWebToken(jwksCerts, cookieContent)
+	default:
+		cookieContent, cookieFound := cookieNameToContentMap[utils.CookieNameAccessToken]
+		if !cookieFound {
+			return MissingCredentialsError{
+				Reason: "access_token cookie not found",
+			}
+		}
+
+		parsedToken, validationError = validator.ValidateJsonWebToken(jwksCerts, cookieContent)
+	}
+
+	// Critical validation issue: Token structurally invalid
+	// These cannot be fixed with refresh
+	if parsedToken == nil {
+		if validationError != nil {
+			return TokenInvalidError{Reason: fmt.Sprintf("token structurally invalid: %s", validationError.Error())}
+		}
+		return TokenInvalidError{Reason: "token structurally invalid: unknown error"}
+	}
+
+	////////////////////////////
+	// Claims check phase
+	////////////////////////////
+
+	// Token is structurally valid - evaluate CEL regardless of expiration
+	for _, celProgram := range f.celPrograms {
+		out, _, err := (*celProgram).Eval(map[string]interface{}{
+			"payload": parsedToken.Claims,
+		})
+
+		if err != nil {
+			return CELEvaluationError{Reason: fmt.Sprintf("CEL program evaluation failed: %s", err.Error())}
+		}
+
+		if out.Value() != true {
+			return ClaimsFailedError{Reason: "claim does not meet cel conditions"}
+		}
+	}
+
+	////////////////////////////
+	// Decision phase
+	////////////////////////////
+
+	// Token is valid and passes CEL
+	if validationError == nil {
+		return nil
+	}
+
+	// Token passes CEL but has non-expiration validation issues.
+	// We can not fix it by refreshing
+	if !errors.As(validationError, &jwt.ErrTokenExpired) {
+		return TokenInvalidError{Reason: fmt.Sprintf("token validation failed: %s", validationError.Error())}
+	}
+
+	////////////////////////////
+	// Refresh flow phase
+	////////////////////////////
+
+	f.logger.Debug("expired token detected. refresh in process")
+
+	// No refresh_token found
+	cookieContent, cookieFound := cookieNameToContentMap[utils.CookieNameRefreshToken]
+	if !cookieFound {
+		return MissingCredentialsError{
+			Reason: "refresh_token cookie not found",
+		}
+	}
+
+	// Try to refresh tokens
+	newTokensBytes, refreshError := f.refreshAccessToken(cookieContent)
+	if refreshError != nil {
+		return TokenRefreshError{Reason: fmt.Sprintf("failed refreshing tokens: %s", refreshError.Error())}
+	}
+
+	// New tokens achieved, store them and allow entrance
+	f.logger.Debug("tokens have been refreshed")
+	f.callbacks.StreamInfo().DynamicMetadata().Set("oauthep", "new_tokens", string(newTokensBytes))
+
 	return nil
 }
 
